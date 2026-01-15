@@ -314,6 +314,12 @@ class Application {
       this.app.use('/azure', azureOpenaiRoutes)
       this.app.use('/admin/webhook', webhookRoutes)
 
+      // 🚀 Antigravity Enhanced 路由（独立模块，不影响原有 /antigravity/api/）
+      // 功能：Warmup 拦截、自动 Stream 转换、后台任务降级、多策略退避
+      const antigravityEnhancedRoutes = require('./routes/antigravityEnhancedRoutes')
+      this.app.use('/antigravity-enhanced/api', antigravityEnhancedRoutes)
+      logger.info('🚀 Antigravity Enhanced 路由已注册: /antigravity-enhanced/api/')
+
       // 🏠 根路径重定向到新版管理界面
       this.app.get('/', (req, res) => {
         res.redirect('/admin-next/api-stats')
