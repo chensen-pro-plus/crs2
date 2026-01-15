@@ -145,7 +145,7 @@ async function handleMessages(req, res) {
     
     const result = await retryExecutor.execute(async (attempt, shouldRotate) => {
       // 选择账号
-      const account = await unifiedGeminiScheduler.selectAccountForApiKey(
+      const accountInfo = await unifiedGeminiScheduler.selectAccountForApiKey(
         apiKeyData,
         sessionHash,
         model,
@@ -155,14 +155,22 @@ async function handleMessages(req, res) {
         }
       )
       
-      if (!account) {
+      if (!accountInfo) {
         throw new Error('没有可用的 Antigravity 账号')
+      }
+      
+      // 获取账号详情（关键：scheduler 只返回 ID）
+      const geminiAccountService = require('../geminiAccountService')
+      const account = await geminiAccountService.getAccount(accountInfo.accountId)
+      
+      if (!account) {
+        throw new Error(`找不到账号详情: ${accountInfo.accountId}`)
       }
       
       selectedAccount = account
       
       logger.info(
-        `[AntigravityEnhanced][${traceId}] 👤 使用账号: ${account.email || account.id} ` +
+        `[AntigravityEnhanced][${traceId}] 👤 使用账号: ${account.email || account.name || account.id} ` +
         `(attempt ${attempt + 1})`
       )
       
@@ -172,13 +180,14 @@ async function handleMessages(req, res) {
       // 发送请求
       const response = await antigravityClient.request({
         accessToken: account.accessToken,
-        proxyConfig: account.proxyConfig,
+        proxyConfig: typeof account.proxy === 'string' ? JSON.parse(account.proxy) : account.proxy,
         requestData: {
           model,
           request: requestBody
         },
         projectId,
         stream: actualStream,
+        params: { alt: 'sse' }, // 对齐 Rust 版参数
         timeoutMs: 600000
       })
       
@@ -328,8 +337,61 @@ async function healthCheck(req, res) {
   })
 }
 
+/**
+ * Token 计数处理
+ */
+async function handleCountTokens(req, res) {
+  const traceId = generateTraceId()
+  
+  try {
+    const body = req.body
+    if (!body || !body.messages) {
+      return res.status(400).json({ error: 'Missing messages' })
+    }
+
+    // 获取 API Key
+    const apiKey = extractApiKey(req)
+    const apiKeyData = await apiKeyService.validateApiKey(apiKey)
+    
+    if (!apiKeyData) {
+      return res.status(401).json({ error: 'Invalid API Key' })
+    }
+
+    const model = body.model || 'claude-sonnet-4'
+    
+    // 选择账号
+    const account = await unifiedGeminiScheduler.selectAccountForApiKey(
+      apiKeyData,
+      'token-count',
+      model,
+      { preferredOAuthProvider: 'antigravity' }
+    )
+
+    if (!account) {
+      return res.status(503).json({ error: 'No accounts available' })
+    }
+
+    // 转换消息格式为 Gemini contents
+    const anthropicGeminiBridgeService = require('../anthropicGeminiBridgeService')
+    const { contents } = anthropicGeminiBridgeService.standardizeMessages(body.messages)
+
+    const result = await antigravityClient.countTokens({
+      accessToken: account.accessToken,
+      proxyConfig: account.proxyConfig,
+      contents,
+      model
+    })
+
+    res.json(result)
+  } catch (error) {
+    logger.error(`[AntigravityEnhanced][${traceId}] countTokens 失败:`, error)
+    res.status(500).json({ error: error.message })
+  }
+}
+
 module.exports = {
   handleMessages,
   handleModels,
+  handleCountTokens,
   healthCheck
 }
