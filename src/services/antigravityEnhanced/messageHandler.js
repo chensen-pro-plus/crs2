@@ -15,6 +15,7 @@ const logger = require('../../utils/logger')
 // 增强功能模块
 const { isWarmupRequest, sendWarmupResponse } = require('./warmupInterceptor')
 const { StreamConverter } = require('./streamConverter')
+const { GeminiToClaudeTransformer } = require('./geminiToClaudeTransformer')
 const { RetryExecutor } = require('../../utils/antigravityEnhanced/retryStrategy')
 const { 
   processBackgroundTaskDowngrade, 
@@ -314,14 +315,18 @@ async function handleMessages(req, res) {
       return res.json(jsonResponse)
     }
     
-    // 直接转发流
-    logger.info(`[AntigravityEnhanced][${traceId}] 📡 转发流响应...`)
+    // 使用转换器将 Gemini SSE 转换为 Claude SSE 格式
+    logger.info(`[AntigravityEnhanced][${traceId}] 📡 转发流响应 (带格式转换)...`)
     
     res.setHeader('Content-Type', 'text/event-stream')
     res.setHeader('Cache-Control', 'no-cache')
     res.setHeader('Connection', 'keep-alive')
     
-    response.data.pipe(res)
+    // 创建 Gemini → Claude 转换器
+    const transformer = new GeminiToClaudeTransformer(traceId)
+    
+    // 通过转换器处理流
+    response.data.pipe(transformer).pipe(res)
     
     response.data.on('end', () => {
       const elapsed = Date.now() - startTime

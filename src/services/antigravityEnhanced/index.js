@@ -4,10 +4,11 @@
  * 提供增强版的 Antigravity API 代理功能
  */
 
-const { handleMessages, handleModels, healthCheck } = require('./messageHandler')
+const { handleMessages, handleModels, healthCheck, handleCountTokens } = require('./messageHandler')
 
 module.exports = {
   handleMessages,
   handleModels,
-  healthCheck
+  healthCheck,
+  handleCountTokens
 }
