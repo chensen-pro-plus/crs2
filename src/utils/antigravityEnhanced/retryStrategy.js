@@ -164,14 +164,31 @@ class RetryExecutor {
         let errorText = ''
         try {
           if (error?.response?.data) {
-            errorText = typeof error.response.data === 'string' 
-              ? error.response.data 
-              : JSON.stringify(error.response.data)
+            // 检查 data 类型，避免序列化流对象导致循环引用错误
+            const data = error.response.data
+            if (typeof data === 'string') {
+              errorText = data
+            } else if (Buffer.isBuffer(data)) {
+              // Buffer 对象直接转字符串
+              errorText = data.toString('utf-8')
+            } else if (typeof data === 'object' && data !== null) {
+              // 检查是否是流对象（有 pipe 方法的对象不能序列化）
+              if (typeof data.pipe === 'function') {
+                // 这是一个流对象，不能序列化，使用错误消息代替
+                errorText = error?.message || 'Stream response error'
+              } else {
+                // 普通对象，安全序列化
+                errorText = JSON.stringify(data)
+              }
+            } else {
+              errorText = String(data)
+            }
           } else {
             errorText = error?.message || ''
           }
-        } catch {
-          errorText = error?.message || ''
+        } catch (e) {
+          // 序列化失败时的回退处理
+          errorText = error?.message || `Serialization failed: ${e.message}`
         }
         
         // 确定策略

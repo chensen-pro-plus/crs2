@@ -102,7 +102,22 @@ function isRetryableError(error) {
   // 400/404 特定错误可重试
   if (status === 400 || status === 404) {
     const data = error?.response?.data
-    const text = typeof data === 'string' ? data : JSON.stringify(data || '')
+    let text = ''
+    
+    // 安全处理 data，避免序列化流对象导致循环引用
+    if (typeof data === 'string') {
+      text = data
+    } else if (data && typeof data === 'object' && typeof data.pipe !== 'function') {
+      // 只序列化普通对象，不序列化流对象
+      try {
+        text = JSON.stringify(data)
+      } catch (e) {
+        text = error?.message || ''
+      }
+    } else {
+      text = error?.message || ''
+    }
+    
     const msg = text.toLowerCase()
     return (
       msg.includes('requested model is currently unavailable') ||

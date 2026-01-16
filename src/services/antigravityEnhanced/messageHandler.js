@@ -32,6 +32,7 @@ const sessionHelper = require('../../utils/sessionHelper')
 
 /**
  * 助手函数：获取并准备账号详情
+ * 包含 Token 刷新逻辑，确保返回有效的 accessToken
  */
 async function prepareAccountDetails(accountInfo, traceId) {
   if (!accountInfo || !accountInfo.accountId) return null
@@ -56,6 +57,25 @@ async function prepareAccountDetails(accountInfo, traceId) {
 
   if (!account) return null
 
+  // ========== 核心修复: Token 刷新逻辑 ==========
+  // 对于 OAuth 账号，检查 Token 是否过期，过期则刷新
+  if (accountInfo.accountType !== 'gemini-api' && account.refreshToken) {
+    const isExpired = geminiAccountService.isTokenExpired(account)
+    
+    if (isExpired) {
+      logger.info(`[AntigravityEnhanced][${traceId}] 🔄 Token 已过期，正在刷新...`)
+      try {
+        const newTokens = await geminiAccountService.refreshAccountToken(account.id)
+        // 更新 accessToken 为刷新后的新 Token
+        account.accessToken = newTokens.access_token
+        logger.info(`[AntigravityEnhanced][${traceId}] ✅ Token 刷新成功`)
+      } catch (refreshError) {
+        logger.error(`[AntigravityEnhanced][${traceId}] ❌ Token 刷新失败:`, refreshError.message)
+        // 仍然尝试使用旧 Token，让上游决定是否有效
+      }
+    }
+  }
+
   // 安全解析代理配置
   let proxyConfig = null
   if (account.proxy) {
@@ -72,6 +92,7 @@ async function prepareAccountDetails(accountInfo, traceId) {
 
   return { ...account, proxyConfig }
 }
+
 
 /**
  * 确保 projectId
