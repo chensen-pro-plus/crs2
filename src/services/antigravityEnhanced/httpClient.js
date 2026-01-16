@@ -160,15 +160,18 @@ async function sendRequest({
   signal = null
 }) {
   // 构建 Antigravity 信封格式
-  // 注意: sessionId 应该放在 request 对象内部（如果需要）
   // 参考: Antigravity-Manager2/src-tauri/src/proxy/mappers/claude/request.rs
   const envelope = {
     project: projectId,
     requestId: generateRequestId(),
     model: model,
     userAgent: 'antigravity',
+    requestType: 'agent',  // 关键字段！Rust 版本默认为 'agent'
     request: requestBody
   }
+  
+  // 调试：输出完整请求体（临时总是开启）
+  logger.info('[AntigravityEnhanced][DEBUG] 完整请求体:', JSON.stringify(envelope, null, 2))
   
   // 创建代理 Agent
   const proxyAgent = ProxyHelper.createProxyAgent(proxyConfig)
