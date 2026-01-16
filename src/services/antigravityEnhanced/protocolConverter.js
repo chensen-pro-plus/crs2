@@ -465,10 +465,27 @@ function buildSystemParts(system) {
  * 清洗 JSON Schema (移除不支持的字段)
  */
 function sanitizeSchemaForFunctionDeclarations(schema) {
+  // Gemini 支持的字段白名单
+  // 参考: Antigravity-Manager2/src-tauri/src/proxy/common/json_schema.rs
   const allowedKeys = new Set([
-    'type', 'properties', 'required', 'description', 'enum', 'items',
-    'anyOf', 'oneOf', 'allOf', 'additionalProperties',
-    'minimum', 'maximum', 'minItems', 'maxItems', 'minLength', 'maxLength'
+    'type', 'properties', 'required', 'description', 'enum', 'items'
+  ])
+
+  // 完全移除的黑名单字段 (参考 Rust 版本的 hard_remove_fields)
+  const hardRemoveFields = new Set([
+    '$schema', '$id', '$ref', '$defs', 'definitions',
+    'additionalProperties', 'format', 'default', 'const',
+    'uniqueItems', 'examples', 'example',
+    'propertyNames', 'cache_control',
+    'anyOf', 'oneOf', 'allOf', 'not',
+    'if', 'then', 'else',
+    'dependencies', 'dependentSchemas', 'dependentRequired',
+    'contentEncoding', 'contentMediaType',
+    'deprecated', 'readOnly', 'writeOnly', 'title',
+    // 数字校验字段
+    'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum',
+    'minLength', 'maxLength', 'minItems', 'maxItems',
+    'multipleOf', 'pattern'
   ])
 
   if (schema === null || schema === undefined) return null
@@ -478,9 +495,12 @@ function sanitizeSchemaForFunctionDeclarations(schema) {
   }
 
   const sanitized = {}
+  
   for (const [key, value] of Object.entries(schema)) {
-    // 跳过元字段和不支持的字段
-    if (['$schema', '$id', 'title', 'default', 'examples', 'example', 'format'].includes(key)) continue
+    // 完全跳过黑名单字段
+    if (hardRemoveFields.has(key)) continue
+    
+    // 只保留白名单字段
     if (!allowedKeys.has(key)) continue
 
     if (key === 'properties') {
@@ -499,7 +519,11 @@ function sanitizeSchemaForFunctionDeclarations(schema) {
 
     if (key === 'required') {
       if (Array.isArray(value)) {
-        const req = value.filter(item => typeof item === 'string')
+        // 过滤 required，只保留 properties 中存在的字段
+        const propKeys = sanitized.properties ? Object.keys(sanitized.properties) : []
+        const req = value.filter(item => 
+          typeof item === 'string' && (propKeys.length === 0 || propKeys.includes(item))
+        )
         if (req.length > 0) sanitized.required = req
       }
       continue
@@ -507,8 +531,25 @@ function sanitizeSchemaForFunctionDeclarations(schema) {
 
     if (key === 'enum') {
       if (Array.isArray(value)) {
-        const en = value.filter(item => ['string', 'number', 'boolean'].includes(typeof item))
+        // 确保 enum 值全部为字符串 (Gemini 要求)
+        const en = value.map(item => {
+          if (typeof item === 'string') return item
+          if (typeof item === 'number' || typeof item === 'boolean') return String(item)
+          if (item === null) return 'null'
+          return JSON.stringify(item)
+        })
         if (en.length > 0) sanitized.enum = en
+      }
+      continue
+    }
+
+    if (key === 'type') {
+      // 处理联合类型 ["string", "null"] -> "string"
+      if (Array.isArray(value)) {
+        const nonNull = value.find(t => t !== 'null')
+        sanitized.type = (nonNull || 'string').toLowerCase()
+      } else if (typeof value === 'string') {
+        sanitized.type = value.toLowerCase()
       }
       continue
     }
@@ -519,7 +560,7 @@ function sanitizeSchemaForFunctionDeclarations(schema) {
     }
   }
 
-  // 确保 schema 至少是一个 object schema
+  // 确保 schema 至少有一个 type
   if (!sanitized.type) {
     if (sanitized.items) sanitized.type = 'array'
     else if (sanitized.properties || sanitized.required) sanitized.type = 'object'
@@ -548,15 +589,32 @@ function convertAnthropicToolsToGeminiTools(tools) {
       const toolDef = tool?.custom && typeof tool.custom === 'object' ? tool.custom : tool
       if (!toolDef || !toolDef.name) return null
 
-      const description = compactToolDescription(toolDef.description || '')
-      const inputSchema = toolDef.input_schema || toolDef.parameters || {}
-      const sanitizedSchema = sanitizeSchemaForFunctionDeclarations(inputSchema)
-      const compactedSchema = compactSchemaDescriptions(sanitizedSchema)
+      // 跳过 web_search 等内置工具
+      if (toolDef.name === 'web_search' || toolDef.name === 'google_search') {
+        return null
+      }
+      if (toolDef.type === 'web_search_20250305' || tool.type === 'web_search_20250305') {
+        return null
+      }
 
+      const description = toolDef.description || ''
+      
+      // input_schema 是必需的，提供默认值
+      // 参考: Antigravity-Manager2/src-tauri/src/proxy/mappers/claude/request.rs
+      let inputSchema = toolDef.input_schema || toolDef.parameters || {
+        type: 'object',
+        properties: {}
+      }
+      
+      // 清理 schema，移除 Gemini 不支持的字段
+      const cleanedSchema = sanitizeSchemaForFunctionDeclarations(inputSchema)
+
+      // 使用 Gemini 原生格式 (functionDeclarations)
+      // 与 Rust 版本保持一致
       return {
         name: toolDef.name,
         description,
-        parametersJsonSchema: compactedSchema
+        parameters: cleanedSchema
       }
     })
     .filter(Boolean)
