@@ -197,7 +197,10 @@ class RetryExecutor {
         
         // 检查是否应该重试
         if (!shouldRetry(strategy)) {
-          logger.warn(`[RetryExecutor][${this.traceId}] ❌ 不可重试错误: HTTP ${status}`)
+          logger.warn(`[RetryExecutor][${this.traceId}] ❌ 不可重试错误: HTTP ${status}`, {
+            errorMessage: error.message,
+            errorText: errorText.substring(0, 500)  // 只记录前500字符避免日志过长
+          })
           throw error
         }
         

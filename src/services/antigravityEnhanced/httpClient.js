@@ -208,12 +208,20 @@ async function sendRequest({
     }
     
     try {
-      logger.debug(`[AntigravityEnhanced] 📤 发送请求到: ${url}`, {
+      // 记录详细的请求信息用于调试
+      logger.info(`[AntigravityEnhanced] 📤 发送请求:`, {
+        url,
         model,
         stream,
         projectId,
-        requestId: envelope.requestId
+        requestId: envelope.requestId,
+        sessionId: envelope.sessionId
       })
+      
+      // 调试模式下记录完整请求体
+      if (process.env.ANTIGRAVITY_DEBUG === 'true') {
+        logger.debug(`[AntigravityEnhanced] 📄 完整请求体:`, JSON.stringify(envelope, null, 2))
+      }
       
       const response = await axios(axiosConfig)
       return response
@@ -221,6 +229,31 @@ async function sendRequest({
     } catch (error) {
       lastError = error
       const status = error?.response?.status || null
+      
+      // 详细记录错误响应
+      let errorData = null
+      try {
+        const data = error?.response?.data
+        if (typeof data === 'string') {
+          errorData = data
+        } else if (data && typeof data === 'object' && typeof data.pipe !== 'function') {
+          errorData = JSON.stringify(data, null, 2)
+        } else if (data && typeof data.read === 'function') {
+          // 尝试从流中读取部分内容
+          errorData = '[Stream response - cannot display]'
+        }
+      } catch (e) {
+        errorData = `[解析错误响应失败: ${e.message}]`
+      }
+      
+      logger.error(`[AntigravityEnhanced] ❌ HTTP ${status} 错误详情:`, {
+        url,
+        model,
+        projectId,
+        errorMessage: error.message,
+        errorData: errorData,
+        headers: error?.response?.headers ? JSON.stringify(error.response.headers) : null
+      })
       
       // 如果还有备用端点且错误可重试，继续尝试
       const hasNext = i + 1 < endpoints.length

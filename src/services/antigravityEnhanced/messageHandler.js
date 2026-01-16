@@ -311,8 +311,25 @@ async function handleMessages(req, res) {
   } catch (error) {
     const elapsed = Date.now() - startTime
     
+    // 提取详细的错误响应信息
+    let errorDetails = ''
+    try {
+      const data = error?.response?.data
+      if (typeof data === 'string') {
+        errorDetails = data
+      } else if (data && typeof data === 'object' && typeof data.pipe !== 'function') {
+        errorDetails = JSON.stringify(data)
+      }
+    } catch (e) {
+      errorDetails = `[解析失败: ${e.message}]`
+    }
+    
     logger.error(
-      `[AntigravityEnhanced][${traceId}] ❌ 请求失败: ${error.message} (${elapsed}ms)`
+      `[AntigravityEnhanced][${traceId}] ❌ 请求失败: ${error.message} (${elapsed}ms)`,
+      {
+        status: error?.response?.status,
+        errorDetails: errorDetails.substring(0, 1000)  // 限制日志长度
+      }
     )
     
     // 提取错误状态码
