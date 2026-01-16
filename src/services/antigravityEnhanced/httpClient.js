@@ -160,12 +160,13 @@ async function sendRequest({
   signal = null
 }) {
   // 构建 Antigravity 信封格式
+  // 注意: sessionId 应该放在 request 对象内部（如果需要）
+  // 参考: Antigravity-Manager2/src-tauri/src/proxy/mappers/claude/request.rs
   const envelope = {
     project: projectId,
     requestId: generateRequestId(),
     model: model,
     userAgent: 'antigravity',
-    sessionId: sessionId || generateSessionId(),
     request: requestBody
   }
   
@@ -238,9 +239,32 @@ async function sendRequest({
           errorData = data
         } else if (data && typeof data === 'object' && typeof data.pipe !== 'function') {
           errorData = JSON.stringify(data, null, 2)
-        } else if (data && typeof data.read === 'function') {
-          // 尝试从流中读取部分内容
-          errorData = '[Stream response - cannot display]'
+        } else if (data && typeof data.pipe === 'function') {
+          // 这是一个流对象，尝试读取其内容
+          try {
+            const chunks = []
+            // 同步读取已经缓冲的数据
+            data.on('data', chunk => chunks.push(chunk))
+            // 等待流结束或超时
+            await new Promise((resolve, reject) => {
+              const timeout = setTimeout(() => {
+                data.destroy()
+                resolve()
+              }, 1000) // 最多等待1秒
+              data.on('end', () => {
+                clearTimeout(timeout)
+                resolve()
+              })
+              data.on('error', (err) => {
+                clearTimeout(timeout)
+                reject(err)
+              })
+            })
+            const buffer = Buffer.concat(chunks)
+            errorData = buffer.toString('utf-8')
+          } catch (streamErr) {
+            errorData = `[读取错误流失败: ${streamErr.message}]`
+          }
         }
       } catch (e) {
         errorData = `[解析错误响应失败: ${e.message}]`

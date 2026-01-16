@@ -8,6 +8,9 @@
 const crypto = require('crypto')
 const logger = require('../../utils/logger')
 
+// 模型映射模块
+const { mapClaudeModelToGemini } = require('./modelMapping')
+
 // ============================================================================
 // 常量定义
 // ============================================================================
@@ -597,6 +600,13 @@ function convertAnthropicToolChoiceToGeminiToolConfig(toolChoice) {
  * @returns {Object} { model, request } Gemini 请求对象
  */
 function buildGeminiRequestFromAnthropic(body, baseModel, { sessionId = null } = {}) {
+  // ========== 核心修复: 模型名称映射 ==========
+  // Claude Code 客户端发送的模型名需要映射为 Antigravity API 支持的模型名
+  const mappedModel = mapClaudeModelToGemini(baseModel)
+  if (mappedModel !== baseModel) {
+    logger.info(`[ProtocolConverter] 模型映射: ${baseModel} → ${mappedModel}`)
+  }
+
   const normalizedMessages = normalizeAnthropicMessages(body.messages || [])
   const toolUseIdToName = buildToolUseIdToNameMap(normalizedMessages || [])
 
@@ -667,7 +677,8 @@ function buildGeminiRequestFromAnthropic(body, baseModel, { sessionId = null } =
     geminiRequestBody.toolConfig = { functionCallingConfig: { mode: 'AUTO' } }
   }
 
-  return { model: baseModel, request: geminiRequestBody }
+  // 返回映射后的模型名
+  return { model: mappedModel, request: geminiRequestBody }
 }
 
 // ============================================================================
