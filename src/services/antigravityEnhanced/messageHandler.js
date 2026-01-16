@@ -95,11 +95,35 @@ async function prepareAccountDetails(accountInfo, traceId) {
 
 
 /**
- * 确保 projectId
+ * 确保 projectId（异步版本 - 支持动态获取）
+ * 如果账号没有存储的 projectId，则调用 loadCodeAssist API 获取
  */
-function ensureProjectId(account) {
-  if (account.projectId) return account.projectId
-  if (account.tempProjectId) return account.tempProjectId
+async function ensureProjectId(account, traceId) {
+  // 1. 优先使用已存储的 projectId
+  if (account.projectId) {
+    return account.projectId
+  }
+  
+  // 2. 使用临时 projectId
+  if (account.tempProjectId) {
+    return account.tempProjectId
+  }
+  
+  // 3. 动态获取：调用 loadCodeAssist API
+  logger.info(`[AntigravityEnhanced][${traceId}] 🔄 账号无 projectId，正在调用 loadCodeAssist 获取...`)
+  
+  const { loadCodeAssist } = require('./httpClient')
+  const result = await loadCodeAssist(account.accessToken, account.proxyConfig)
+  
+  if (result.projectId) {
+    logger.info(`[AntigravityEnhanced][${traceId}] ✅ 获取到 projectId: ${result.projectId}`)
+    // 可选：缓存到账号的 tempProjectId 中避免重复请求 (此处不做持久化)
+    account.tempProjectId = result.projectId
+    return result.projectId
+  }
+  
+  // 4. 最后兜底：生成随机 ID（但这通常会导致 429）
+  logger.warn(`[AntigravityEnhanced][${traceId}] ⚠️ 无法获取 projectId，使用随机 ID（可能导致 429）`)
   return `ag-${crypto.randomBytes(8).toString('hex')}`
 }
 
@@ -232,8 +256,8 @@ async function handleMessages(req, res) {
         `(attempt ${attempt + 1})`
       )
       
-      // 确保 projectId
-      const projectId = ensureProjectId(account)
+      // 确保 projectId（异步获取，如果账号没有则调用 loadCodeAssist）
+      const projectId = await ensureProjectId(account, traceId)
       
       // ========== 核心: 使用协议转换器构建 Gemini 请求体 ==========
       const { model: effectiveModel, request: geminiRequest } = buildGeminiRequestFromAnthropic(

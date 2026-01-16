@@ -70,6 +70,55 @@ function buildHeaders(accessToken, baseUrl) {
 }
 
 /**
+ * 调用 loadCodeAssist API 获取真实的 projectId
+ * 参考: Antigravity-Manager2/src-tauri/src/modules/quota.rs
+ * 
+ * @param {string} accessToken - Google OAuth access token
+ * @param {Object} proxyConfig - 可选的代理配置
+ * @returns {Promise<{projectId: string|null, subscriptionType: string|null}>}
+ */
+async function loadCodeAssist(accessToken, proxyConfig = null) {
+  const baseUrl = PROD_ENDPOINT // 优先使用生产端点
+  const url = `${baseUrl}/v1internal:loadCodeAssist`
+  
+  const proxyAgent = ProxyHelper.createProxyAgent(proxyConfig)
+  
+  try {
+    const response = await axios({
+      method: 'POST',
+      url,
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        'User-Agent': process.env.ANTIGRAVITY_USER_AGENT || DEFAULT_USER_AGENT
+      },
+      data: {
+        metadata: { ideType: 'ANTIGRAVITY' }
+      },
+      httpsAgent: proxyAgent || keepAliveAgent,
+      proxy: proxyAgent ? false : undefined,
+      timeout: 30000
+    })
+    
+    const data = response.data
+    // 提取 cloudaicompanionProject 和订阅类型
+    const projectId = data?.cloudaicompanionProject || null
+    const subscriptionType = data?.subscriptionType || null
+    
+    if (projectId) {
+      logger.debug(`[loadCodeAssist] 获取到项目ID: ${projectId}, 订阅类型: ${subscriptionType}`)
+    } else {
+      logger.warn('[loadCodeAssist] 未获取到项目ID，响应:', JSON.stringify(data))
+    }
+    
+    return { projectId, subscriptionType }
+  } catch (error) {
+    logger.error('[loadCodeAssist] 请求失败:', error.message)
+    return { projectId: null, subscriptionType: null }
+  }
+}
+
+/**
  * 生成请求 ID
  */
 function generateRequestId() {
@@ -391,5 +440,6 @@ module.exports = {
   buildHeaders,
   generateRequestId,
   generateSessionId,
-  isRetryableError
+  isRetryableError,
+  loadCodeAssist  // 新增：用于获取真实的 projectId
 }
