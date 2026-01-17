@@ -346,6 +346,45 @@ function canEnableAntigravityThinking(messages) {
 }
 
 /**
+ * 检查是否因为历史消息原因需要禁用 Thinking
+ * 
+ * 场景: 如果最后一条 Assistant 消息处于 Tool Use 流程中，但没有 Thinking 块，
+ * 说明这是一个由非 Thinking 模型发起的流程。此时强制开启 Thinking 会导致:
+ * "final assistant message must start with a thinking block" 错误。
+ * 
+ * 参考: Antigravity-Manager2/src-tauri/src/proxy/mappers/claude/request.rs 行 411-437
+ */
+function shouldDisableThinkingDueToHistory(messages) {
+  // 逆序查找最后一条 Assistant 消息
+  for (let i = (messages || []).length - 1; i >= 0; i--) {
+    const msg = messages[i]
+    if (msg?.role !== 'assistant') continue
+    
+    const content = msg.content
+    if (!Array.isArray(content)) continue
+    
+    let hasToolUse = false
+    let hasThinking = false
+    
+    for (const part of content) {
+      if (!part || !part.type) continue
+      if (part.type === 'tool_use') hasToolUse = true
+      if (part.type === 'thinking' || part.type === 'redacted_thinking') hasThinking = true
+    }
+    
+    // 如果有工具调用，但没有 Thinking 块 -> 不兼容
+    if (hasToolUse && !hasThinking) {
+      logger.info('[ProtocolConverter] 检测到历史 ToolUse 无 Thinking，请求禁用 thinking')
+      return true
+    }
+    
+    // 只检查最近的一条 Assistant 消息
+    return false
+  }
+  return false
+}
+
+/**
  * 将 Anthropic 消息转换为 Gemini contents 格式
  */
 function convertAnthropicMessagesToGeminiContents(messages, toolUseIdToName, { stripThinking = false } = {}) {
@@ -770,6 +809,13 @@ function buildGeminiRequestFromAnthropic(body, baseModel, { sessionId = null } =
     const budgetRaw = Number(body.thinking.budget_tokens)
     if (Number.isFinite(budgetRaw)) {
       canEnableThinking = canEnableAntigravityThinking(normalizedMessages)
+      
+      // [FIX] 检查历史消息兼容性 - 参考 Rust 版本 request.rs 行 411-437
+      // 如果最后一条 assistant 消息有 tool_use 但没有 thinking，必须禁用 thinking
+      if (canEnableThinking && shouldDisableThinkingDueToHistory(normalizedMessages)) {
+        logger.warn('[ProtocolConverter] 历史消息不兼容 (ToolUse 无 Thinking)，禁用 thinking 模式')
+        canEnableThinking = false
+      }
     }
   }
 
