@@ -118,8 +118,18 @@ async function ensureProjectId(account, traceId) {
   
   if (result.projectId) {
     logger.info(`[AntigravityEnhanced][${traceId}] ✅ 获取到 projectId: ${result.projectId}`)
-    // 可选：缓存到账号的 tempProjectId 中避免重复请求 (此处不做持久化)
-    account.tempProjectId = result.projectId
+    
+    // 持久化保存到数据库（参考 Antigravity-Manager2 的实现）
+    try {
+      const geminiAccountService = require('../geminiAccountService')
+      await geminiAccountService.updateAccount(account.id, { projectId: result.projectId })
+      logger.info(`[AntigravityEnhanced][${traceId}] 💾 projectId 已保存到数据库`)
+    } catch (saveError) {
+      logger.warn(`[AntigravityEnhanced][${traceId}] ⚠️ 保存 projectId 失败:`, saveError.message)
+    }
+    
+    // 同时更新内存中的引用，避免同一请求周期内重复获取
+    account.projectId = result.projectId
     return result.projectId
   }
   
