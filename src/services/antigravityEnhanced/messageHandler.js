@@ -467,6 +467,10 @@ async function healthCheck(req, res) {
 
 /**
  * Token 计数处理
+ * 
+ * 参考 Antigravity-Manager2 的做法：直接返回占位符值
+ * 原因：Gemini/Antigravity API 的 countTokens 端点可能不存在或返回 404
+ * 这不影响主要功能，仅用于 CLI 显示估算 token 数量
  */
 async function handleCountTokens(req, res) {
   const traceId = generateTraceId()
@@ -484,35 +488,14 @@ async function handleCountTokens(req, res) {
       return res.status(401).json({ error: 'Invalid API Key' })
     }
 
-    const model = body.model || 'claude-3-5-sonnet-20241022'
+    // [快速修复] 直接返回占位符值，不调用真实 API
+    // 参考: Antigravity-Manager2/src-tauri/src/proxy/handlers/claude.rs handle_count_tokens
+    logger.debug(`[AntigravityEnhanced][${traceId}] countTokens 返回占位符值（API 不支持）`)
     
-    const accountInfo = await unifiedGeminiScheduler.selectAccountForApiKey(
-      apiKeyData,
-      'token-count',
-      model,
-      { preferredOAuthProvider: 'antigravity' }
-    )
-
-    if (!accountInfo) {
-      return res.status(503).json({ error: 'No accounts available' })
-    }
-
-    const account = await prepareAccountDetails(accountInfo, traceId)
-    if (!account) {
-      return res.status(503).json({ error: 'Account details missing' })
-    }
-
-    // 使用独立的协议转换器
-    const { request: geminiRequest } = buildGeminiRequestFromAnthropic(body, model)
-    
-    const result = await httpClient.countTokens({
-      accessToken: account.accessToken,
-      proxyConfig: account.proxyConfig,
-      contents: geminiRequest.contents,
-      model
+    res.json({
+      input_tokens: 0,
+      output_tokens: 0
     })
-
-    res.json(result)
   } catch (error) {
     logger.error(`[AntigravityEnhanced][${traceId}] countTokens 失败:`, error)
     res.status(500).json({ error: error.message })
