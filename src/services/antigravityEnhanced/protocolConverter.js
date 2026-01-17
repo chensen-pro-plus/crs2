@@ -139,12 +139,13 @@ function normalizeToolUseInput(input) {
 
 /**
  * 清洗 thinking block 的 signature
+ * 接受原始签名或 Base64 编码的签名
  */
 function sanitizeThoughtSignature(signature) {
   if (!signature || typeof signature !== 'string') return ''
-  // 简单检查: 签名应该是 Base64-like 字符串
-  if (!/^[A-Za-z0-9+/=]+$/.test(signature)) return ''
-  if (signature.length < 10) return ''
+  // 签名可能是 Base64 格式，也可能是原始格式
+  // 只要长度足够就认为有效（最小 50 字符，参考 Rust 版本）
+  if (signature.length < 50) return ''
   return signature
 }
 
@@ -386,24 +387,29 @@ function convertAnthropicMessagesToGeminiContents(messages, toolUseIdToName, { s
           // 优先级：客户端签名 > 缓存签名
           // 原因：thinking block 的 signature 和它的 thinking 内容是配对的，不能随意替换！
           // 如果用错误的签名会导致 "Invalid signature in thinking block" 错误
-          let signature = null
+          let encodedSig = null
+          let sigSource = null  // 用于日志
           
           // 1. 优先使用客户端提供的原始签名（如果存在）
           const clientSig = sanitizeThoughtSignature(part.signature)
           if (clientSig) {
-            signature = clientSig
-            logger.debug(`[ProtocolConverter] 使用客户端原始签名 (length=${signature.length})`)
+            // 客户端签名是原始格式，需要 Base64 编码
+            encodedSig = Buffer.from(clientSig).toString('base64')
+            sigSource = 'client'
+            logger.debug(`[ProtocolConverter] 使用客户端原始签名 (length=${clientSig.length})`)
           } else {
             // 2. 只有在客户端没有签名时，才尝试从缓存恢复
             // 这用于处理签名丢失的场景（例如 Claude CLI 某些版本不返回签名）
             const cachedSig = signatureStore.get()
             if (cachedSig && cachedSig.length >= 50) {
-              signature = cachedSig
-              logger.info(`[ProtocolConverter] 客户端无签名，使用缓存签名恢复 (length=${signature.length})`)
+              // [关键] 缓存的签名已经是 Base64 格式，不需要再次编码！
+              encodedSig = cachedSig
+              sigSource = 'cache'
+              logger.info(`[ProtocolConverter] 客户端无签名，使用缓存签名恢复 (sigSource=${sigSource}, length=${cachedSig.length})`)
             }
           }
           
-          const hasSignature = Boolean(signature)
+          const hasSignature = Boolean(encodedSig)
 
           // 空 thinking block 跳过
           if (!hasThinkingText && !hasSignature) continue
@@ -413,9 +419,7 @@ function convertAnthropicMessagesToGeminiContents(messages, toolUseIdToName, { s
             continue
           }
 
-          // Base64 编码签名（参考 Rust 版本 request.rs 第 700-703 行）
-          const encodedSig = Buffer.from(signature).toString('base64')
-          
+          // [关键] encodedSig 已经是正确的 Base64 格式，无需再编码
           lastThoughtSignature = encodedSig
           const thoughtPart = { thought: true, thoughtSignature: encodedSig }
           if (hasThinkingText) {
@@ -479,9 +483,8 @@ function convertAnthropicMessagesToGeminiContents(messages, toolUseIdToName, { s
             const partObj = { functionCall }
             
             if (finalSig) {
-              // Base64 编码签名
-              const encodedSig = Buffer.from(finalSig).toString('base64')
-              partObj.thoughtSignature = encodedSig
+              // [关键] finalSig 已经是 Base64 格式，无需再编码
+              partObj.thoughtSignature = finalSig
             }
             
             parts.push(partObj)

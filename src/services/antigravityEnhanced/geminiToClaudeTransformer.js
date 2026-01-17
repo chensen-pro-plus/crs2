@@ -166,17 +166,19 @@ class GeminiToClaudeTransformer extends Transform {
 
     // 处理签名
     if (signature) {
-      // Base64 解码
+      // [关键修复] 保存原始 Base64 签名到缓存，不进行解码
+      // 这样在 protocolConverter.js 恢复时就不需要再次编码
+      signatureStore.store(signature)
+      logger.debug(`[GeminiToClaudeTransformer][${this.traceId}] 捕获 thought_signature (原始 Base64, length=${signature.length})`)
+      
+      // 输出给客户端时需要解码
       let decodedSig = signature
       try {
         decodedSig = Buffer.from(signature, 'base64').toString('utf-8')
       } catch (e) {
-        // 不是 base64，保持原样
+        // 如果解码失败，保持原样
+        logger.warn(`[GeminiToClaudeTransformer][${this.traceId}] 签名 Base64 解码失败，使用原始值`)
       }
-      
-      // 捕获并存储签名到全局缓存（参考 Rust 版 streaming.rs）
-      signatureStore.store(decodedSig)
-      logger.debug(`[GeminiToClaudeTransformer][${this.traceId}] 捕获 thought_signature (length=${decodedSig.length})`)
       
       this.emitDelta('signature_delta', { signature: decodedSig })
     }
