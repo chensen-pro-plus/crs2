@@ -1066,13 +1066,13 @@ async function refreshAccountToken(accountId) {
       await new Promise((resolve) => setTimeout(resolve, 2000))
 
       // 重新获取账户数据（可能已被其他进程刷新）
+      // 注意：getAccount() 已经返回解密后的数据，不需要再次 decrypt()
       const updatedAccount = await getAccount(accountId)
       if (updatedAccount && updatedAccount.accessToken) {
         const oauthConfig = getOauthProviderConfig(updatedAccount.oauthProvider)
-        const accessToken = decrypt(updatedAccount.accessToken)
         return {
-          access_token: accessToken,
-          refresh_token: updatedAccount.refreshToken ? decrypt(updatedAccount.refreshToken) : '',
+          access_token: updatedAccount.accessToken, // 已解密，无需再 decrypt()
+          refresh_token: updatedAccount.refreshToken || '', // 已解密，无需再 decrypt()
           expiry_date: updatedAccount.expiresAt ? new Date(updatedAccount.expiresAt).getTime() : 0,
           scope: updatedAccount.scopes || oauthConfig.scopes.join(' '),
           token_type: 'Bearer'

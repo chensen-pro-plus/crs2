@@ -375,25 +375,32 @@ function convertAnthropicMessagesToGeminiContents(messages, toolUseIdToName, { s
         }
 
         // 处理 thinking
+        // 参考 Rust 版本 request.rs 第 632-706 行
         if (part.type === 'thinking' || part.type === 'redacted_thinking') {
           if (stripThinking) continue
           
           const thinkingText = extractAnthropicText(part.thinking || part.text || '')
           const hasThinkingText = thinkingText && !shouldSkipText(thinkingText)
           
-          // 签名解析优先级（参考 Rust 版本 request.rs 第 755-776 行）
-          // 优先级：缓存签名 > 客户端签名
-          // 原因：客户端返回的签名可能已失效，但我们缓存的签名是从 Gemini 响应中捕获的有效签名
+          // [关键修复] 签名解析优先级（参考 Rust 版本 request.rs 第 682-704 行）
+          // 优先级：客户端签名 > 缓存签名
+          // 原因：thinking block 的 signature 和它的 thinking 内容是配对的，不能随意替换！
+          // 如果用错误的签名会导致 "Invalid signature in thinking block" 错误
           let signature = null
           
-          // 1. 优先使用缓存签名
-          const cachedSig = signatureStore.get()
-          if (cachedSig && cachedSig.length >= 50) {
-            signature = cachedSig
-            logger.debug(`[ProtocolConverter] 使用缓存签名替换客户端签名 (length=${signature.length})`)
+          // 1. 优先使用客户端提供的原始签名（如果存在）
+          const clientSig = sanitizeThoughtSignature(part.signature)
+          if (clientSig) {
+            signature = clientSig
+            logger.debug(`[ProtocolConverter] 使用客户端原始签名 (length=${signature.length})`)
           } else {
-            // 2. 回退到客户端签名（sanitized）
-            signature = sanitizeThoughtSignature(part.signature)
+            // 2. 只有在客户端没有签名时，才尝试从缓存恢复
+            // 这用于处理签名丢失的场景（例如 Claude CLI 某些版本不返回签名）
+            const cachedSig = signatureStore.get()
+            if (cachedSig && cachedSig.length >= 50) {
+              signature = cachedSig
+              logger.info(`[ProtocolConverter] 客户端无签名，使用缓存签名恢复 (length=${signature.length})`)
+            }
           }
           
           const hasSignature = Boolean(signature)
@@ -406,7 +413,7 @@ function convertAnthropicMessagesToGeminiContents(messages, toolUseIdToName, { s
             continue
           }
 
-          // Base64 编码签名（参考 Rust 版本 request.rs 第 782-784 行）
+          // Base64 编码签名（参考 Rust 版本 request.rs 第 700-703 行）
           const encodedSig = Buffer.from(signature).toString('base64')
           
           lastThoughtSignature = encodedSig
