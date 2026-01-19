@@ -643,6 +643,30 @@ class UnifiedGeminiScheduler {
     }
   }
 
+  // 🧹 清除所有账户的限流状态（用于乐观重置）
+  async clearAllRateLimits() {
+    try {
+      logger.warn('[UnifiedGeminiScheduler] 🧹 Clear all rate limits triggered (Optimistic Reset)')
+
+      // 并行清除两类账号的限流状态
+      const [geminiCount, apiCount] = await Promise.all([
+        geminiAccountService.clearAllRateLimits(),
+        geminiApiAccountService.clearAllRateLimits()
+      ])
+
+      const total = geminiCount + apiCount
+      if (total > 0) {
+        logger.info(
+          `[UnifiedGeminiScheduler] ✅ Optimistic reset: Cleared ${total} accounts (${geminiCount} Gemini, ${apiCount} API)`
+        )
+      }
+      return total
+    } catch (error) {
+      logger.error('❌ Failed to clear all rate limits:', error)
+      return 0
+    }
+  }
+
   // 🔍 检查账户是否处于限流状态
   async isAccountRateLimited(accountId, accountType = null) {
     try {

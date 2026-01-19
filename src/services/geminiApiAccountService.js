@@ -581,6 +581,26 @@ class GeminiApiAccountService {
       await client.sadd(this.SHARED_ACCOUNTS_KEY, accountId)
     }
   }
+  // 清除所有账户的限流状态
+  async clearAllRateLimits() {
+    try {
+      const accounts = await this.getAllAccounts(true) // Include inactive
+      let count = 0
+      for (const account of accounts) {
+        if (account.rateLimitStatus && account.rateLimitStatus.isRateLimited) {
+          await this.setAccountRateLimited(account.id, false)
+          count++
+        }
+      }
+      if (count > 0) {
+        logger.warn(`[GeminiApiAccountService] 🔄 Cleared rate limits for ${count} accounts`)
+      }
+      return count
+    } catch (error) {
+      logger.error('Failed to clear all Gemini-API rate limits:', error)
+      return 0
+    }
+  }
 }
 
 module.exports = new GeminiApiAccountService()

@@ -1926,6 +1926,27 @@ async function resetAccountStatus(accountId) {
   }
 }
 
+// 清除所有账户的限流状态
+async function clearAllRateLimits() {
+  try {
+    const accounts = await getAllAccounts(true) // Include inactive too just in case
+    let count = 0
+    for (const account of accounts) {
+      if (account.rateLimitStatus === 'limited') {
+        await setAccountRateLimited(account.id, false)
+        count++
+      }
+    }
+    if (count > 0) {
+      logger.warn(`[GeminiAccountService] 🔄 Cleared rate limits for ${count} accounts`)
+    }
+    return count
+  } catch (error) {
+    logger.error('Failed to clear all rate limits:', error)
+    return 0
+  }
+}
+
 module.exports = {
   generateAuthUrl,
   pollAuthorizationStatus,
@@ -1960,5 +1981,6 @@ module.exports = {
   generateContentStreamAntigravity,
   fetchAvailableModelsAntigravity,
   updateTempProjectId,
-  resetAccountStatus
+  resetAccountStatus,
+  clearAllRateLimits
 }

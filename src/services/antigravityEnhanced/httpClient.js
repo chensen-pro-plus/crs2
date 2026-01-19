@@ -322,12 +322,16 @@ async function sendRequest({
         errorData = `[解析错误响应失败: ${e.message}]`
       }
       
+      // 提取 Retry-After header（用于限流追踪）
+      const retryAfter = error?.response?.headers?.['retry-after'] || null
+      
       logger.error(`[AntigravityEnhanced] ❌ HTTP ${status} 错误详情:`, {
         url,
         model,
         projectId,
         errorMessage: error.message,
         errorData: errorData,
+        retryAfter,
         headers: error?.response?.headers ? JSON.stringify(error.response.headers) : null
       })
       
@@ -336,6 +340,13 @@ async function sendRequest({
       if (hasNext && isRetryableError(error)) {
         logger.warn(`[AntigravityEnhanced] ⚠️ 请求失败 (${status})，切换到备用端点: ${endpoints[i + 1]}`)
         continue
+      }
+      
+      // 增强错误对象：附加限流追踪所需的信息
+      error.rateLimitInfo = {
+        status,
+        retryAfter,
+        errorBody: errorData
       }
       
       throw error

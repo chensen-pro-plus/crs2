@@ -195,6 +195,12 @@ class RetryExecutor {
         const strategy = determineStrategy(status, errorText)
         this.lastStrategy = strategy
         
+        // 🛡️ 检查是否被标记为强制停止重试 (QUOTA_EXHAUSTED 保护)
+        if (error.shouldStopRetry === true) {
+          logger.warn(`[RetryExecutor][${this.traceId}] 🛡️ 检测到 shouldStopRetry 标志，停止重试`)
+          throw error
+        }
+        
         // 检查是否应该重试
         if (!shouldRetry(strategy)) {
           logger.warn(`[RetryExecutor][${this.traceId}] ❌ 不可重试错误: HTTP ${status}`, {

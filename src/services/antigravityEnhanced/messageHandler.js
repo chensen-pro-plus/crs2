@@ -25,6 +25,8 @@ const {
 // 独立模块 (核心: 完全不依赖原有服务)
 const { buildGeminiRequestFromAnthropic } = require('./protocolConverter')
 const httpClient = require('./httpClient')
+const { rateLimitTracker } = require('./rateLimitTracker')
+const { mapClaudeModelToGemini } = require('./modelMapping')
 
 // 复用原有服务（只读）用于账号调度
 const unifiedGeminiScheduler = require('../unifiedGeminiScheduler')
@@ -241,17 +243,76 @@ async function handleMessages(req, res) {
     
     let selectedAccount = null
     
+    // 🔧 修复：在账号选择前进行模型映射
+    // 确保账号选择使用正确的映射后模型名进行模型支持检查
+    // 例如：claude-haiku-4-5-20251001 -> claude-sonnet-4-5
+    const mappedModelForScheduling = mapClaudeModelToGemini(model)
+    
     const result = await retryExecutor.execute(async (attempt, shouldRotate) => {
       // 选择账号
-      const accountInfo = await unifiedGeminiScheduler.selectAccountForApiKey(
-        apiKeyData,
-        sessionHash,
-        model,
-        { 
-          preferredOAuthProvider: 'antigravity',
-          forceRotate: shouldRotate
+      let accountInfo
+      try {
+        accountInfo = await unifiedGeminiScheduler.selectAccountForApiKey(
+          apiKeyData,
+          sessionHash,
+          mappedModelForScheduling,
+          { 
+            preferredOAuthProvider: 'antigravity',
+            forceRotate: shouldRotate
+          }
+        )
+      } catch (error) {
+        // 捕获 "No available Gemini accounts" 错误，尝试乐观重置
+        if (error.message.includes('No available Gemini accounts')) {
+          const minWait = rateLimitTracker.getMinResetSeconds()
+          
+          // Layer 1: 如果最短等待时间 <= 2秒，执行缓冲延迟
+          if (minWait !== null && minWait <= 2) {
+            logger.warn(
+              `[AntigravityEnhanced][${traceId}] ⚠️ 所有账号限流，最短等待 ${minWait}s，尝试缓冲延迟...`
+            )
+            
+            // 缓冲延迟 500ms
+            await new Promise(resolve => setTimeout(resolve, 500))
+            
+            try {
+              // 重试选择账号
+              accountInfo = await unifiedGeminiScheduler.selectAccountForApiKey(
+                apiKeyData,
+                sessionHash,
+                mappedModelForScheduling,
+                { preferredOAuthProvider: 'antigravity', forceRotate: shouldRotate }
+              )
+              logger.info(`[AntigravityEnhanced][${traceId}] ✅ 缓冲延迟后成功获取账号`)
+            } catch (retryError) {
+              // Layer 2: 缓冲后仍无可用账号，执行乐观重置
+              logger.warn(
+                `[AntigravityEnhanced][${traceId}] ⚠️ 缓冲延迟失败，执行乐观重置 (Clear All)...`
+              )
+              
+              // 清除 RateLimitTracker 内存记录
+              rateLimitTracker.clearAll()
+              // 清除 UnifiedGeminiScheduler 持久化记录
+              await unifiedGeminiScheduler.clearAllRateLimits()
+              
+              // 再次重试选择账号
+              accountInfo = await unifiedGeminiScheduler.selectAccountForApiKey(
+                apiKeyData,
+                sessionHash,
+                mappedModelForScheduling,
+                { preferredOAuthProvider: 'antigravity', forceRotate: shouldRotate }
+              )
+              logger.info(`[AntigravityEnhanced][${traceId}] ✅ 乐观重置后成功获取账号`)
+            }
+          } else {
+            // 等待时间过长，直接抛出异常
+            throw error
+          }
+        } else {
+          // 其他错误直接抛出
+          throw error
         }
-      )
+      }
       
       if (!accountInfo) {
         throw new Error('没有可用的 Antigravity 账号')
@@ -299,23 +360,69 @@ async function handleMessages(req, res) {
           timeoutMs: 600000
         })
         
+        // ✅ 请求成功，重置该账号的失败计数
+        logger.debug(
+          `[AntigravityEnhanced][${traceId}] ✅ 请求成功，调用 markSuccess 重置账号 ${accountInfo.accountId} 的失败计数`
+        )
+        rateLimitTracker.markSuccess(accountInfo.accountId)
+        
         return { response, account }
       } catch (httpError) {
-        // 🔧 修复：429 限流时标记账号，确保下次重试切换到其他账号
-        const errorStatus = httpError?.response?.status || httpError?.status
-        if (errorStatus === 429) {
-          logger.warn(
-            `[AntigravityEnhanced][${traceId}] ⚠️ 账号 ${account.email || account.id} 触发 429 限流，标记为限流状态`
+        // ========== 增强：使用限流追踪器解析限流信息 ==========
+        const rateLimitInfo = httpError?.rateLimitInfo || {}
+        const errorStatus = rateLimitInfo.status || httpError?.response?.status || httpError?.status
+        
+        logger.debug(
+          `[AntigravityEnhanced][${traceId}] 🔍 捕获到 HTTP 错误:`,
+          {
+            status: errorStatus,
+            hasRateLimitInfo: !!httpError?.rateLimitInfo,
+            retryAfter: rateLimitInfo.retryAfter,
+            errorBodyLength: rateLimitInfo.errorBody?.length || 0
+          }
+        )
+        
+        // 只处理 429/5xx 错误
+        if (errorStatus === 429 || errorStatus === 500 || errorStatus === 503 || errorStatus === 529) {
+          logger.info(
+            `[AntigravityEnhanced][${traceId}] 📊 检测到限流/服务器错误 (${errorStatus})，开始解析...`
           )
-          // 标记账号为限流状态（异步执行，不阻塞重试）
-          unifiedGeminiScheduler.markAccountRateLimited(
-            accountInfo.accountId, 
-            accountInfo.accountType, 
-            sessionHash
-          ).catch(err => {
-            logger.error(`[AntigravityEnhanced][${traceId}] ❌ 标记账号限流失败:`, err.message)
-          })
+          
+          // 解析限流原因和持续时间
+          const parseResult = rateLimitTracker.parseFromError(
+            accountInfo.accountId,
+            errorStatus,
+            rateLimitInfo.retryAfter,
+            rateLimitInfo.errorBody || '',
+            effectiveModel
+          )
+          
+          if (parseResult) {
+            logger.warn(
+              `[AntigravityEnhanced][${traceId}] ⚠️ 账号 ${account.email || account.id} ` +
+              `限流类型: ${parseResult.reason}, 锁定 ${parseResult.retryAfterSec}秒`
+            )
+            
+            // 标记账号为限流状态（传递解析出的锁定时间）
+            unifiedGeminiScheduler.markAccountRateLimited(
+              accountInfo.accountId, 
+              accountInfo.accountType, 
+              sessionHash
+            ).catch(err => {
+              logger.error(`[AntigravityEnhanced][${traceId}] ❌ 标记账号限流失败:`, err.message)
+            })
+            
+            // 🛡️ QUOTA_EXHAUSTED 保护：停止重试，保护账号池
+            if (parseResult.shouldStop) {
+              logger.error(
+                `[AntigravityEnhanced][${traceId}] 🛡️ 检测到 QUOTA_EXHAUSTED，停止重试保护账号池`
+              )
+              // 标记错误为不可重试
+              httpError.shouldStopRetry = true
+            }
+          }
         }
+        
         // 重新抛出错误，让 RetryExecutor 处理
         throw httpError
       }
