@@ -390,6 +390,9 @@ async function handleMessages(req, res) {
         `tokens: ${usage.input_tokens}/${usage.output_tokens}`
       )
       
+      // 🔍 调试日志
+      logger.info(`[AntigravityEnhanced][${traceId}] 📋 apiKeyData.id=${apiKeyData?.id}, tokens=${usage.input_tokens}/${usage.output_tokens}`)
+      
       // 记录 token 消耗到数据库
       if (apiKeyData?.id && (usage.input_tokens > 0 || usage.output_tokens > 0)) {
         apiKeyService.recordUsage(
