@@ -30,6 +30,14 @@ class GeminiToClaudeTransformer extends Transform {
     // 响应元数据
     this.responseId = null
     this.modelVersion = null
+    
+    // 🔧 新增：累积的 token 使用量（供外部读取）
+    this.finalUsage = {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0
+    }
   }
 
   /**
@@ -69,18 +77,25 @@ class GeminiToClaudeTransformer extends Transform {
   }
 
   /**
-   * 解析 usage 信息
+   * 解析 usage 信息并更新 finalUsage
    */
   parseUsage(usageMetadata) {
     if (!usageMetadata) {
       return { input_tokens: 0, output_tokens: 0 }
     }
-    return {
+    const usage = {
       input_tokens: usageMetadata.promptTokenCount || 0,
       output_tokens: usageMetadata.candidatesTokenCount || 0,
       cache_creation_input_tokens: 0,
       cache_read_input_tokens: usageMetadata.cachedContentTokenCount || 0
     }
+    
+    // 🔧 更新累积的 usage（取最大值，因为流式响应中后续的 usage 包含之前的）
+    this.finalUsage.input_tokens = Math.max(this.finalUsage.input_tokens, usage.input_tokens)
+    this.finalUsage.output_tokens = Math.max(this.finalUsage.output_tokens, usage.output_tokens)
+    this.finalUsage.cache_read_input_tokens = Math.max(this.finalUsage.cache_read_input_tokens, usage.cache_read_input_tokens)
+    
+    return usage
   }
 
   /**

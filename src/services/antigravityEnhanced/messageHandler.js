@@ -197,15 +197,18 @@ async function handleMessages(req, res) {
       })
     }
     
-    const apiKeyData = await apiKeyService.validateApiKey(apiKey)
-    if (!apiKeyData) {
+    const apiKeyResult = await apiKeyService.validateApiKey(apiKey)
+    if (!apiKeyResult || !apiKeyResult.valid) {
       return res.status(401).json({
         error: {
           type: 'authentication_error',
-          message: 'API Key 无效'
+          message: apiKeyResult?.error || 'API Key 无效'
         }
       })
     }
+    
+    // 🔧 修复：正确解构 keyData（validateApiKey 返回 {valid, keyData} 结构）
+    const apiKeyData = apiKeyResult.keyData
     
     // ========== 增强功能 2: 后台任务降级 ==========
     let model = body.model || 'claude-sonnet-4'
@@ -336,10 +339,29 @@ async function handleMessages(req, res) {
       const jsonResponse = await converter.collectFromAxiosResponse(response)
       
       const elapsed = Date.now() - startTime
+      const inputTokens = jsonResponse.usage?.input_tokens || 0
+      const outputTokens = jsonResponse.usage?.output_tokens || 0
+      const cacheReadTokens = jsonResponse.usage?.cache_read_input_tokens || 0
+      
       logger.info(
         `[AntigravityEnhanced][${traceId}] ✅ 请求完成: ${elapsed}ms, ` +
-        `tokens: ${jsonResponse.usage?.input_tokens || 0}/${jsonResponse.usage?.output_tokens || 0}`
+        `tokens: ${inputTokens}/${outputTokens}`
       )
+      
+      // 🔧 修复：记录 token 消耗到数据库
+      if (apiKeyData?.id && (inputTokens > 0 || outputTokens > 0)) {
+        apiKeyService.recordUsage(
+          apiKeyData.id,
+          inputTokens,
+          outputTokens,
+          0,  // cache_creation_input_tokens
+          cacheReadTokens,
+          model,
+          selectedAccount?.id || null
+        ).catch(err => {
+          logger.error(`[AntigravityEnhanced][${traceId}] ❌ 记录 usage 失败:`, err.message)
+        })
+      }
       
       res.setHeader('Content-Type', 'application/json')
       return res.json(jsonResponse)
@@ -358,9 +380,30 @@ async function handleMessages(req, res) {
     // 通过转换器处理流
     response.data.pipe(transformer).pipe(res)
     
-    response.data.on('end', () => {
+    // 🔧 修复：在流结束时记录 token 消耗
+    transformer.on('finish', () => {
       const elapsed = Date.now() - startTime
-      logger.info(`[AntigravityEnhanced][${traceId}] ✅ 流响应完成: ${elapsed}ms`)
+      const usage = transformer.finalUsage
+      
+      logger.info(
+        `[AntigravityEnhanced][${traceId}] ✅ 流响应完成: ${elapsed}ms, ` +
+        `tokens: ${usage.input_tokens}/${usage.output_tokens}`
+      )
+      
+      // 记录 token 消耗到数据库
+      if (apiKeyData?.id && (usage.input_tokens > 0 || usage.output_tokens > 0)) {
+        apiKeyService.recordUsage(
+          apiKeyData.id,
+          usage.input_tokens,
+          usage.output_tokens,
+          0,  // cache_creation_input_tokens
+          usage.cache_read_input_tokens,
+          model,
+          selectedAccount?.id || null
+        ).catch(err => {
+          logger.error(`[AntigravityEnhanced][${traceId}] ❌ 记录 usage 失败:`, err.message)
+        })
+      }
     })
     
     response.data.on('error', (error) => {
