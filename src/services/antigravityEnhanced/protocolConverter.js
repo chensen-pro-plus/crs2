@@ -9,7 +9,7 @@ const crypto = require('crypto')
 const logger = require('../../utils/logger')
 
 // 模型映射模块
-const { mapClaudeModelToGemini } = require('./modelMapping')
+const { mapClaudeModelToGemini, getWebSearchModel } = require('./modelMapping')
 
 // 签名存储模块
 const signatureStore = require('./signatureStore')
@@ -43,6 +43,90 @@ const MAX_TOOL_RESULT_CHARS = 200000
 // ============================================================================
 // 辅助函数
 // ============================================================================
+
+// 联网搜索工具关键词
+const NETWORKING_TOOL_KEYWORDS = [
+  'web_search', 
+  'google_search', 
+  'web_search_20250305', 
+  'google_search_retrieval'
+]
+
+/**
+ * 检测请求中是否包含联网搜索工具
+ * 参考: Antigravity-Manager2/src-tauri/src/proxy/mappers/common_utils.rs detects_networking_tool
+ * 
+ * @param {Array} tools - Anthropic 格式的工具列表
+ * @returns {boolean} 是否有联网工具请求
+ */
+function detectsNetworkingTool(tools) {
+  if (!Array.isArray(tools)) return false
+  
+  for (const tool of tools) {
+    if (!tool) continue
+    
+    // 1. Claude 直发风格: { name: "web_search" } 或 { type: "web_search_20250305" }
+    if (NETWORKING_TOOL_KEYWORDS.includes(tool.name)) return true
+    if (NETWORKING_TOOL_KEYWORDS.includes(tool.type)) return true
+    
+    // 2. OpenAI 嵌套风格: { type: "function", function: { name: "web_search" } }
+    if (tool.function && NETWORKING_TOOL_KEYWORDS.includes(tool.function.name)) return true
+    
+    // 3. 检查 custom 包装: { custom: { name: "web_search" } }
+    if (tool.custom && NETWORKING_TOOL_KEYWORDS.includes(tool.custom.name)) return true
+  }
+  
+  return false
+}
+
+/**
+ * 检测是否包含非联网的本地函数工具
+ * 用于判断是否需要跳过 googleSearch 注入（Gemini 不支持混用）
+ * 
+ * @param {Array} tools - Anthropic 格式的工具列表
+ * @returns {boolean} 是否有本地函数工具
+ */
+function containsNonNetworkingTool(tools) {
+  if (!Array.isArray(tools)) return false
+  
+  for (const tool of tools) {
+    if (!tool) continue
+    
+    const toolName = tool.name || tool.custom?.name || tool.function?.name
+    if (toolName && !NETWORKING_TOOL_KEYWORDS.includes(toolName)) {
+      return true
+    }
+  }
+  
+  return false
+}
+
+/**
+ * 向 Gemini 请求体注入 googleSearch 工具
+ * 参考: Antigravity-Manager2/src-tauri/src/proxy/mappers/common_utils.rs inject_google_search_tool
+ * 
+ * @param {Object} geminiRequest - Gemini 请求体
+ */
+function injectGoogleSearchTool(geminiRequest) {
+  const tools = geminiRequest.tools || []
+  
+  // 安全校验：如果已有 functionDeclarations，禁止注入
+  // Gemini v1internal 不支持在一次请求中混用 search 和 functions
+  const hasFunctions = tools.some(t => t?.functionDeclarations)
+  if (hasFunctions) {
+    logger.warn('[ProtocolConverter] 已有 functionDeclarations，跳过 googleSearch 注入')
+    return false
+  }
+  
+  // 清除已有的 googleSearch/googleSearchRetrieval，防止重复
+  geminiRequest.tools = tools.filter(t => !t?.googleSearch && !t?.googleSearchRetrieval)
+  
+  // 注入 googleSearch 工具
+  geminiRequest.tools.push({ googleSearch: {} })
+  
+  logger.info('[ProtocolConverter] 🔍 已注入 googleSearch 工具')
+  return true
+}
 
 /**
  * 从 Anthropic 消息内容中提取纯文本
@@ -889,8 +973,42 @@ function buildGeminiRequestFromAnthropic(body, baseModel, { sessionId = null } =
     geminiRequestBody.toolConfig = { functionCallingConfig: { mode: 'AUTO' } }
   }
 
-  // 返回映射后的模型名
-  return { model: mappedModel, request: geminiRequestBody }
+  // ========== 联网搜索处理 ==========
+  // 参考: Antigravity-Manager2/src-tauri/src/proxy/mappers/common_utils.rs resolve_request_config
+  let finalModel = mappedModel
+  const hasNetworkingTool = detectsNetworkingTool(body.tools)
+  const hasNonNetworkingTool = containsNonNetworkingTool(body.tools)
+  
+  if (hasNetworkingTool) {
+    logger.info('[ProtocolConverter] 🔍 检测到联网搜索工具请求')
+    
+    // 如果有非联网工具（本地 MCP 工具等），不能注入 googleSearch
+    // 因为 Gemini v1internal 不支持同时使用 search 和 functions
+    if (hasNonNetworkingTool) {
+      logger.warn('[ProtocolConverter] ⚠️ 存在本地函数工具，无法启用联网搜索（Gemini 不支持混用）')
+    } else {
+      // 清除已转换的 tools（因为联网工具不需要 functionDeclarations）
+      geminiRequestBody.tools = []
+      
+      // 注入 googleSearch 工具
+      const injected = injectGoogleSearchTool(geminiRequestBody)
+      
+      if (injected) {
+        // 降级模型到 gemini-2.5-flash（只有该模型支持 googleSearch）
+        const webSearchModel = getWebSearchModel()
+        if (finalModel !== webSearchModel) {
+          logger.info(`[ProtocolConverter] 🔄 联网搜索模型降级: ${finalModel} → ${webSearchModel}`)
+          finalModel = webSearchModel
+        }
+        
+        // 移除 toolConfig（googleSearch 不需要）
+        delete geminiRequestBody.toolConfig
+      }
+    }
+  }
+
+  // 返回最终模型名
+  return { model: finalModel, request: geminiRequestBody }
 }
 
 // ============================================================================

@@ -65,6 +65,20 @@ const CLAUDE_TO_GEMINI_MAP = {
 // 默认兜底模型
 const DEFAULT_MODEL = 'claude-sonnet-4-5'
 
+// 联网搜索专用模型 (只有 gemini-2.5-flash 支持 googleSearch)
+const WEB_SEARCH_MODEL = 'gemini-2.5-flash'
+
+/**
+ * 获取支持联网搜索的模型名
+ * 注：Gemini v1internal API 只有 gemini-2.5-flash 支持 googleSearch 工具
+ * 其他模型（包括 Gemini 3 Pro、thinking 模型、Claude 别名）必须降级
+ * 
+ * @returns {string} 联网搜索专用模型名
+ */
+function getWebSearchModel() {
+  return WEB_SEARCH_MODEL
+}
+
 /**
  * 将 Claude/OpenAI 模型名映射为 Antigravity API 支持的模型名
  * 
@@ -114,6 +128,8 @@ function getSupportedModels() {
 module.exports = {
   mapClaudeModelToGemini,
   getSupportedModels,
+  getWebSearchModel,
   CLAUDE_TO_GEMINI_MAP,
-  DEFAULT_MODEL
+  DEFAULT_MODEL,
+  WEB_SEARCH_MODEL
 }

@@ -18,11 +18,16 @@ class GeminiToClaudeTransformer extends Transform {
     this.traceId = traceId
     
     // 状态机
-    this.blockType = 'none' // 'none', 'text', 'thinking', 'function'
+    this.blockType = 'none' // 'none', 'text', 'thinking', 'function', 'web_search'
     this.blockIndex = 0
     this.messageStartSent = false
     this.messageStopSent = false
     this.usedTool = false
+    
+    // 联网搜索状态
+    this.webSearchEmitted = false
+    this.webSearchQuery = null
+    this.groundingChunks = null
     
     // Buffer
     this.buffer = ''
@@ -314,6 +319,68 @@ class GeminiToClaudeTransformer extends Transform {
   }
 
   /**
+   * 处理联网搜索结果 (groundingMetadata)
+   * 参考: Antigravity-Manager2/src-tauri/src/proxy/mappers/claude/mod.rs process_grounding_metadata
+   */
+  processGroundingMetadata(grounding) {
+    if (!grounding || this.webSearchEmitted) return
+    
+    // 提取搜索词
+    const searchQueries = grounding.webSearchQueries || []
+    const searchQuery = searchQueries[0] || ''
+    
+    // 提取搜索结果
+    const groundingChunks = grounding.groundingChunks || 
+      grounding.grounding_metadata?.groundingChunks || []
+    
+    if (groundingChunks.length === 0) return
+    
+    // 构建搜索结果数组
+    const searchResults = []
+    for (const chunk of groundingChunks) {
+      const web = chunk.web
+      if (!web) continue
+      
+      const title = web.title || 'Source'
+      const uri = web.uri || ''
+      if (uri) {
+        searchResults.push({
+          url: uri,
+          title: title,
+          encrypted_content: '', // Gemini 不提供此字段
+          page_age: null
+        })
+      }
+    }
+    
+    if (searchResults.length === 0) return
+    
+    logger.info(`[GeminiToClaudeTransformer][${this.traceId}] 🔍 处理联网搜索结果: ${searchResults.length} 条`)
+    
+    // 生成工具调用 ID
+    const toolUseId = `srvtoolu_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+    
+    // 1. 发送 server_tool_use 块
+    this.startBlock('web_search', {
+      type: 'server_tool_use',
+      id: toolUseId,
+      name: 'web_search',
+      input: { query: searchQuery }
+    })
+    this.endBlock()
+    
+    // 2. 发送 web_search_tool_result 块
+    this.startBlock('web_search', {
+      type: 'web_search_tool_result',
+      tool_use_id: toolUseId,
+      content: searchResults
+    })
+    this.endBlock()
+    
+    this.webSearchEmitted = true
+  }
+
+  /**
    * 处理 Gemini SSE 数据块
    */
   processGeminiChunk(line) {
@@ -360,6 +427,12 @@ class GeminiToClaudeTransformer extends Transform {
     // 处理 candidates
     const candidates = rawJson.candidates || []
     for (const candidate of candidates) {
+      // ========== 处理联网搜索结果 (groundingMetadata) ==========
+      // 参考: Antigravity-Manager2/src-tauri/src/proxy/mappers/claude/mod.rs 第106-125行
+      if (candidate.groundingMetadata) {
+        this.processGroundingMetadata(candidate.groundingMetadata)
+      }
+      
       const content = candidate.content
       if (!content || !content.parts) continue
 
