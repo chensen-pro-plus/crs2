@@ -4,6 +4,9 @@ const accountGroupService = require('./accountGroupService')
 const redis = require('../models/redis')
 const logger = require('../utils/logger')
 
+// 🔧 与 Antigravity-Manager2 对齐：使用内存限流检查
+const { rateLimitTracker } = require('./antigravityEnhanced/rateLimitTracker')
+
 const OAUTH_PROVIDER_GEMINI_CLI = 'gemini-cli'
 const OAUTH_PROVIDER_ANTIGRAVITY = 'antigravity'
 const KNOWN_OAUTH_PROVIDERS = [OAUTH_PROVIDER_GEMINI_CLI, OAUTH_PROVIDER_ANTIGRAVITY]
@@ -264,7 +267,8 @@ class UnifiedGeminiScheduler {
           this._isActive(boundAccount.isActive) &&
           boundAccount.status !== 'error'
         ) {
-          const isRateLimited = await this.isAccountRateLimited(accountId)
+          // 🔧 使用内存限流检查
+          const isRateLimited = rateLimitTracker.isRateLimited(accountId)
           if (!isRateLimited) {
             // 检查模型支持
             if (
@@ -321,7 +325,8 @@ class UnifiedGeminiScheduler {
           ) {
             return availableAccounts
           }
-          const isRateLimited = await this.isAccountRateLimited(boundAccount.id)
+          // 🔧 使用内存限流检查
+          const isRateLimited = rateLimitTracker.isRateLimited(boundAccount.id)
           if (!isRateLimited) {
             // 检查模型支持
             if (
@@ -402,8 +407,8 @@ class UnifiedGeminiScheduler {
           }
         }
 
-        // 检查是否被限流
-        const isRateLimited = await this.isAccountRateLimited(account.id)
+        // 🔧 使用内存限流检查
+        const isRateLimited = rateLimitTracker.isRateLimited(account.id)
         if (!isRateLimited) {
           availableAccounts.push({
             ...account,
@@ -440,8 +445,8 @@ class UnifiedGeminiScheduler {
             }
           }
 
-          // 检查是否被限流
-          const isRateLimited = await this.isAccountRateLimited(account.id)
+          // 🔧 使用内存限流检查
+          const isRateLimited = rateLimitTracker.isRateLimited(account.id)
           if (!isRateLimited) {
             availableAccounts.push({
               ...account,
@@ -489,7 +494,8 @@ class UnifiedGeminiScheduler {
           logger.info(`🚫 Gemini account ${accountId} is not schedulable`)
           return false
         }
-        return !(await this.isAccountRateLimited(accountId))
+        // 🔧 使用内存限流检查
+        return !rateLimitTracker.isRateLimited(accountId)
       } else if (accountType === 'gemini-api') {
         const account = await geminiApiAccountService.getAccount(accountId)
         if (!account || !this._isActive(account.isActive) || account.status === 'error') {
@@ -500,7 +506,8 @@ class UnifiedGeminiScheduler {
           logger.info(`🚫 Gemini-API account ${accountId} is not schedulable`)
           return false
         }
-        return !(await this.isAccountRateLimited(accountId))
+        // 🔧 使用内存限流检查
+        return !rateLimitTracker.isRateLimited(accountId)
       }
       return false
     } catch (error) {
@@ -808,8 +815,8 @@ class UnifiedGeminiScheduler {
             }
           }
 
-          // 检查是否被限流
-          const isRateLimited = await this.isAccountRateLimited(account.id, accountType)
+          // 🔧 使用内存限流检查
+          const isRateLimited = rateLimitTracker.isRateLimited(account.id)
           if (!isRateLimited) {
             availableAccounts.push({
               ...account,

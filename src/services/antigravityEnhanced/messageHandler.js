@@ -263,50 +263,41 @@ async function handleMessages(req, res) {
         )
       } catch (error) {
         // 捕获 "No available Gemini accounts" 错误，尝试乐观重置
+        // 🔧 与 Antigravity-Manager2 对齐：不再检查 minWait，直接尝试乐观重置
         if (error.message.includes('No available Gemini accounts')) {
-          const minWait = rateLimitTracker.getMinResetSeconds()
+          logger.warn(
+            `[AntigravityEnhanced][${traceId}] ⚠️ 所有账号不可用，尝试缓冲延迟...`
+          )
           
-          // Layer 1: 如果最短等待时间 <= 2秒，执行缓冲延迟
-          if (minWait !== null && minWait <= 2) {
+          // Layer 1: 缓冲延迟 500ms（可能是时序竞争导致的状态不同步）
+          await new Promise(resolve => setTimeout(resolve, 500))
+          
+          try {
+            // 重试选择账号
+            accountInfo = await unifiedGeminiScheduler.selectAccountForApiKey(
+              apiKeyData,
+              sessionHash,
+              mappedModelForScheduling,
+              { preferredOAuthProvider: 'antigravity', forceRotate: shouldRotate }
+            )
+            logger.info(`[AntigravityEnhanced][${traceId}] ✅ 缓冲延迟后成功获取账号`)
+          } catch (retryError) {
+            // Layer 2: 缓冲后仍无可用账号，执行乐观重置
             logger.warn(
-              `[AntigravityEnhanced][${traceId}] ⚠️ 所有账号限流，最短等待 ${minWait}s，尝试缓冲延迟...`
+              `[AntigravityEnhanced][${traceId}] ⚠️ 缓冲延迟失败，执行乐观重置 (Clear All)...`
             )
             
-            // 缓冲延迟 500ms
-            await new Promise(resolve => setTimeout(resolve, 500))
+            // 🔧 只清除内存中的限流记录，不再清除数据库状态
+            rateLimitTracker.clearAll()
             
-            try {
-              // 重试选择账号
-              accountInfo = await unifiedGeminiScheduler.selectAccountForApiKey(
-                apiKeyData,
-                sessionHash,
-                mappedModelForScheduling,
-                { preferredOAuthProvider: 'antigravity', forceRotate: shouldRotate }
-              )
-              logger.info(`[AntigravityEnhanced][${traceId}] ✅ 缓冲延迟后成功获取账号`)
-            } catch (retryError) {
-              // Layer 2: 缓冲后仍无可用账号，执行乐观重置
-              logger.warn(
-                `[AntigravityEnhanced][${traceId}] ⚠️ 缓冲延迟失败，执行乐观重置 (Clear All)...`
-              )
-              
-              // 清除 RateLimitTracker 内存记录
-              rateLimitTracker.clearAll()
-              // 清除 UnifiedGeminiScheduler 持久化记录
-              await unifiedGeminiScheduler.clearAllRateLimits()
-              
-              // 再次重试选择账号
-              accountInfo = await unifiedGeminiScheduler.selectAccountForApiKey(
-                apiKeyData,
-                sessionHash,
-                mappedModelForScheduling,
-                { preferredOAuthProvider: 'antigravity', forceRotate: shouldRotate }
-              )
-              logger.info(`[AntigravityEnhanced][${traceId}] ✅ 乐观重置后成功获取账号`)
-            }
-          } else {
-            // 等待时间过长，直接抛出异常
-            throw error
+            // 再次重试选择账号
+            accountInfo = await unifiedGeminiScheduler.selectAccountForApiKey(
+              apiKeyData,
+              sessionHash,
+              mappedModelForScheduling,
+              { preferredOAuthProvider: 'antigravity', forceRotate: shouldRotate }
+            )
+            logger.info(`[AntigravityEnhanced][${traceId}] ✅ 乐观重置后成功获取账号`)
           }
         } else {
           // 其他错误直接抛出
@@ -403,14 +394,14 @@ async function handleMessages(req, res) {
               `限流类型: ${parseResult.reason}, 锁定 ${parseResult.retryAfterSec}秒`
             )
             
-            // 标记账号为限流状态（传递解析出的锁定时间）
-            unifiedGeminiScheduler.markAccountRateLimited(
-              accountInfo.accountId, 
-              accountInfo.accountType, 
-              sessionHash
-            ).catch(err => {
-              logger.error(`[AntigravityEnhanced][${traceId}] ❌ 标记账号限流失败:`, err.message)
-            })
+            // 🔧 与 Antigravity-Manager2 对齐：只使用内存限流，不再标记数据库状态
+            // rateLimitTracker.parseFromError 已经在内存中记录了限流状态
+            // 删除 session 映射，让下次请求选择新账号
+            if (sessionHash) {
+              unifiedGeminiScheduler._deleteSessionMapping(sessionHash).catch(err => {
+                logger.error(`[AntigravityEnhanced][${traceId}] ❌ 删除会话映射失败:`, err.message)
+              })
+            }
             
             // 🛡️ QUOTA_EXHAUSTED 保护：停止重试，保护账号池
             if (parseResult.shouldStop) {
