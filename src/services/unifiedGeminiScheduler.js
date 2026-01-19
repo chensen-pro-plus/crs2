@@ -56,10 +56,26 @@ class UnifiedGeminiScheduler {
     requestedModel = null,
     options = {}
   ) {
-    const { allowApiAccounts = false, oauthProvider = null } = options
-    const normalizedOauthProvider = oauthProvider ? normalizeOauthProvider(oauthProvider) : null
+    // 🔧 修复：正确解析 forceRotate 参数，支持 429 限流时强制轮换账号
+    const {
+      allowApiAccounts = false,
+      oauthProvider = null,
+      preferredOAuthProvider = null, // 兼容 antigravityEnhanced 传入的参数名
+      forceRotate = false // 新增：强制轮换账号（跳过 sticky session）
+    } = options
+
+    // 兼容两种参数名: oauthProvider 和 preferredOAuthProvider
+    const effectiveOauthProvider = oauthProvider || preferredOAuthProvider
+    const normalizedOauthProvider = effectiveOauthProvider
+      ? normalizeOauthProvider(effectiveOauthProvider)
+      : null
 
     try {
+      // 🔄 如果需要强制轮换账号，先删除当前的 sticky session 映射
+      if (forceRotate && sessionHash) {
+        logger.info(`🔄 forceRotate=true，删除 sticky session 映射，强制选择新账号`)
+        await this._deleteSessionMapping(sessionHash)
+      }
       // 如果API Key绑定了专属账户或分组，优先使用
       if (apiKeyData.geminiAccountId) {
         // 检查是否是 Gemini API 账户（api: 前缀）

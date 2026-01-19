@@ -284,18 +284,38 @@ async function handleMessages(req, res) {
       })
       
       // ========== 核心: 使用独立 httpClient 发送请求 ==========
-      const response = await httpClient.sendRequest({
-        accessToken: account.accessToken,
-        proxyConfig: account.proxyConfig,
-        requestBody: geminiRequest,
-        projectId,
-        sessionId: sessionHash,
-        model: effectiveModel,
-        stream: actualStream,
-        timeoutMs: 600000
-      })
-      
-      return { response, account }
+      try {
+        const response = await httpClient.sendRequest({
+          accessToken: account.accessToken,
+          proxyConfig: account.proxyConfig,
+          requestBody: geminiRequest,
+          projectId,
+          sessionId: sessionHash,
+          model: effectiveModel,
+          stream: actualStream,
+          timeoutMs: 600000
+        })
+        
+        return { response, account }
+      } catch (httpError) {
+        // 🔧 修复：429 限流时标记账号，确保下次重试切换到其他账号
+        const errorStatus = httpError?.response?.status || httpError?.status
+        if (errorStatus === 429) {
+          logger.warn(
+            `[AntigravityEnhanced][${traceId}] ⚠️ 账号 ${account.email || account.id} 触发 429 限流，标记为限流状态`
+          )
+          // 标记账号为限流状态（异步执行，不阻塞重试）
+          unifiedGeminiScheduler.markAccountRateLimited(
+            accountInfo.accountId, 
+            accountInfo.accountType, 
+            sessionHash
+          ).catch(err => {
+            logger.error(`[AntigravityEnhanced][${traceId}] ❌ 标记账号限流失败:`, err.message)
+          })
+        }
+        // 重新抛出错误，让 RetryExecutor 处理
+        throw httpError
+      }
     })
     
     // ========== 响应处理 ==========
