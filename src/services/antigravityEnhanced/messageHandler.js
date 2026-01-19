@@ -32,6 +32,7 @@ const { mapClaudeModelToGemini } = require('./modelMapping')
 const unifiedGeminiScheduler = require('../unifiedGeminiScheduler')
 const apiKeyService = require('../apiKeyService')
 const sessionHelper = require('../../utils/sessionHelper')
+const { parseEditorContext, logEditorContext } = require('../../utils/editorContextParser')
 
 /**
  * 助手函数：获取并准备账号详情
@@ -182,6 +183,69 @@ async function handleMessages(req, res) {
       `[AntigravityEnhanced][${traceId}] 📥 收到请求: ` +
       `model=${body.model}, stream=${body.stream}, messages=${body.messages.length}`
     )
+    
+    // ========== 增强功能: 编辑器上下文解析 ==========
+    // 从客户端注入的消息中提取编辑器上下文信息（Active Document, Cursor, 等）
+    
+    // 调试：输出 system 消息的前 500 字符
+    const systemMessage = body.system
+    if (systemMessage) {
+      const systemPreview = typeof systemMessage === 'string' 
+        ? systemMessage.substring(0, 500) 
+        : JSON.stringify(systemMessage).substring(0, 500)
+      
+      // 检查是否包含 Active Document 关键词
+      const hasActiveDoc = typeof systemMessage === 'string' && systemMessage.includes('Active Document')
+      logger.info(`[AntigravityEnhanced][${traceId}] 📋 system 消息预览 (hasActiveDoc=${hasActiveDoc}): ${systemPreview}...`)
+      
+      // 创建一个虚拟的 user 消息来解析 system 内容
+      const systemAsMessage = { role: 'user', content: systemMessage }
+      const systemContext = parseEditorContext([systemAsMessage])
+      if (systemContext.hasContext) {
+        logger.info(`[AntigravityEnhanced][${traceId}] 📋 从 system 消息解析到编辑器上下文`)
+        logEditorContext(systemContext, traceId)
+        try {
+          if (systemContext.activeDocument) {
+            res.setHeader('X-Editor-Active-Document', encodeURIComponent(systemContext.activeDocument))
+          }
+          if (systemContext.cursorLine) {
+            res.setHeader('X-Editor-Cursor-Line', String(systemContext.cursorLine))
+          }
+        } catch (headerError) {
+          logger.debug(`[AntigravityEnhanced][${traceId}] 设置编辑器上下文头失败: ${headerError.message}`)
+        }
+      }
+    } else {
+      logger.info(`[AntigravityEnhanced][${traceId}] 📋 请求中没有 system 消息`)
+    }
+    
+    // 调试：检查最后一条 user 消息
+    const lastUserMsg = body.messages.filter(m => m.role === 'user').pop()
+    if (lastUserMsg) {
+      const content = typeof lastUserMsg.content === 'string' 
+        ? lastUserMsg.content 
+        : JSON.stringify(lastUserMsg.content)
+      const preview = content.substring(0, 500)
+      const hasActiveDoc = content.includes('Active Document')
+      logger.info(`[AntigravityEnhanced][${traceId}] 📋 最后 user 消息预览 (hasActiveDoc=${hasActiveDoc}): ${preview}...`)
+    }
+    
+    // 从 user 消息中解析
+    const editorContext = parseEditorContext(body.messages)
+    if (editorContext.hasContext) {
+      logEditorContext(editorContext, traceId)
+      // 可选：设置调试头（编码以支持非 ASCII 字符）
+      try {
+        if (editorContext.activeDocument) {
+          res.setHeader('X-Editor-Active-Document', encodeURIComponent(editorContext.activeDocument))
+        }
+        if (editorContext.cursorLine) {
+          res.setHeader('X-Editor-Cursor-Line', String(editorContext.cursorLine))
+        }
+      } catch (headerError) {
+        logger.debug(`[AntigravityEnhanced][${traceId}] 设置编辑器上下文头失败: ${headerError.message}`)
+      }
+    }
     
     // ========== 增强功能 1: Warmup 拦截 ==========
     if (isWarmupRequest(body)) {
