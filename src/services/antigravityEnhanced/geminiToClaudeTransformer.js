@@ -13,9 +13,10 @@ const signatureStore = require('./signatureStore')
  * Gemini to Claude SSE Stream Transformer
  */
 class GeminiToClaudeTransformer extends Transform {
-  constructor(traceId = '') {
+  constructor(traceId = '', signatureScope = null) {
     super()
     this.traceId = traceId
+    this.signatureScope = signatureScope
     
     // 状态机
     this.blockType = 'none' // 'none', 'text', 'thinking', 'function', 'web_search'
@@ -35,6 +36,7 @@ class GeminiToClaudeTransformer extends Transform {
     // 响应元数据
     this.responseId = null
     this.modelVersion = null
+    this.hasModelVersion = false
     
     // 🔧 新增：累积的 token 使用量（供外部读取）
     this.finalUsage = {
@@ -60,7 +62,13 @@ class GeminiToClaudeTransformer extends Transform {
     if (this.messageStartSent) return
 
     this.responseId = geminiData.responseId || `msg_${Date.now()}`
-    this.modelVersion = geminiData.modelVersion || 'claude-sonnet-4-5'
+    if (geminiData.modelVersion) {
+      this.modelVersion = geminiData.modelVersion
+      this.hasModelVersion = true
+    } else {
+      this.modelVersion = 'claude-sonnet-4-5'
+      this.hasModelVersion = false
+    }
 
     const usage = this.parseUsage(geminiData.usageMetadata)
 
@@ -188,7 +196,10 @@ class GeminiToClaudeTransformer extends Transform {
     if (signature) {
       // [关键修复] 保存原始 Base64 签名到缓存，不进行解码
       // 这样在 protocolConverter.js 恢复时就不需要再次编码
-      signatureStore.store(signature)
+      signatureStore.store(signature, this.signatureScope)
+      if (this.hasModelVersion) {
+        signatureStore.cacheSignatureFamily(signature, this.modelVersion, this.signatureScope)
+      }
       logger.debug(`[GeminiToClaudeTransformer][${this.traceId}] 捕获 thought_signature (原始 Base64, length=${signature.length})`)
       
       // 输出给客户端时需要解码
@@ -231,9 +242,9 @@ class GeminiToClaudeTransformer extends Transform {
 
     // 缓存工具签名（参考 Rust 版 streaming.rs 第 780 行）
     // 当工具调用时，关联当前最新的 thought_signature
-    const currentSig = signatureStore.get()
+    const currentSig = signatureStore.get(this.signatureScope)
     if (currentSig) {
-      signatureStore.cacheToolSignature(toolId, currentSig)
+      signatureStore.cacheToolSignature(toolId, currentSig, this.signatureScope)
       logger.debug(`[GeminiToClaudeTransformer][${this.traceId}] 缓存工具签名: ${toolId}`)
     }
 

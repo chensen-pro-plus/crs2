@@ -641,10 +641,11 @@ async function handleModels(req, res) {
   
   try {
     const apiKey = extractApiKey(req)
-    const apiKeyData = await apiKeyService.validateApiKey(apiKey)
-    if (!apiKeyData) {
-      return res.status(401).json({ error: 'Invalid API Key' })
+    const apiKeyResult = await apiKeyService.validateApiKey(apiKey)
+    if (!apiKeyResult || !apiKeyResult.valid) {
+      return res.status(401).json({ error: apiKeyResult?.error || 'Invalid API Key' })
     }
+    const apiKeyData = apiKeyResult.keyData
 
     const accountInfo = await unifiedGeminiScheduler.selectAccountForApiKey(
       apiKeyData,
@@ -720,10 +721,10 @@ async function handleCountTokens(req, res) {
     }
 
     const apiKey = extractApiKey(req)
-    const apiKeyData = await apiKeyService.validateApiKey(apiKey)
+    const apiKeyResult = await apiKeyService.validateApiKey(apiKey)
     
-    if (!apiKeyData) {
-      return res.status(401).json({ error: 'Invalid API Key' })
+    if (!apiKeyResult || !apiKeyResult.valid) {
+      return res.status(401).json({ error: apiKeyResult?.error || 'Invalid API Key' })
     }
 
     // [快速修复] 直接返回占位符值，不调用真实 API

@@ -234,6 +234,30 @@ function sanitizeThoughtSignature(signature) {
 }
 
 /**
+ * 检查模型兼容性（与 Antigravity-Manager2 保持一致）
+ */
+function isModelCompatible(cachedModel, targetModel) {
+  const cached = (cachedModel || '').toLowerCase()
+  const target = (targetModel || '').toLowerCase()
+  if (!cached || !target) return true
+
+  if (cached === target) return true
+  if (cached.includes('gemini-1.5') && target.includes('gemini-1.5')) return true
+  if (cached.includes('gemini-2.0') && target.includes('gemini-2.0')) return true
+  if (cached.includes('claude-3-5') && target.includes('claude-3-5')) return true
+  if (cached.includes('claude-3-7') && target.includes('claude-3-7')) return true
+
+  return false
+}
+
+function isSignatureCompatible(signature, targetModel, signatureScope) {
+  if (!signature || !targetModel) return true
+  const cachedFamily = signatureStore.getSignatureFamily(signature, signatureScope)
+  if (!cachedFamily) return true
+  return isModelCompatible(cachedFamily, targetModel)
+}
+
+/**
  * 构建 tool_use ID 到工具名称的映射
  */
 function buildToolUseIdToNameMap(messages) {
@@ -382,13 +406,31 @@ function normalizeAnthropicMessages(messages) {
  * 检查是否可以启用 Antigravity Thinking
  * 参考: Antigravity-Manager2/src-tauri/src/proxy/mappers/claude/request.rs 第 260-315 行
  * 
- * 逻辑：
- * 1. 首次请求（无 thinking 历史）→ 允许启用
- * 2. 有 thinking 历史：
- *    - 如果有全局缓存签名 → 允许（会在消息转换时注入）
- *    - 如果无缓存签名 → 禁用（避免 Invalid signature 错误）
+ * 逻辑（对齐 Antigravity-Manager2）：
+ * 1. 无 thinking 历史时仍允许启用（由上游验证签名）。
+ * 2. 只有在存在 tool_use 时，才强制要求有效签名，否则禁用 thinking。
  */
-function canEnableAntigravityThinking(messages) {
+function hasValidSignatureForFunctionCalls(messages, globalSig) {
+  if (globalSig && globalSig.length >= 50) {
+    return true
+  }
+
+  for (const msg of messages || []) {
+    if (msg?.role !== 'assistant') continue
+    const content = msg.content
+    if (!Array.isArray(content)) continue
+
+    for (const part of content) {
+      if (part?.type === 'thinking' && part.signature && part.signature.length >= 50) {
+        return true
+      }
+    }
+  }
+
+  return false
+}
+
+function canEnableAntigravityThinking(messages, signatureScope = null) {
   let hasThinkingHistory = false
   let hasFunctionCalls = false
   
@@ -410,23 +452,17 @@ function canEnableAntigravityThinking(messages) {
     }
   }
   
-  // 首次 thinking 请求（无历史），允许启用
   if (!hasThinkingHistory) {
     logger.debug('[ProtocolConverter] 首次 thinking 请求，允许启用')
-    return true
   }
-  
-  // 有 thinking 历史时，检查是否有全局缓存签名
-  // 参考 Rust 版本：只有在有有效签名时才允许继续 thinking
-  const globalSig = signatureStore.get()
-  if (globalSig && globalSig.length >= 50) {
-    logger.info(`[ProtocolConverter] 有 thinking 历史，使用缓存签名 (length=${globalSig.length})`)
-    return true
+
+  const globalSig = signatureStore.get(signatureScope)
+  if (hasFunctionCalls && !hasValidSignatureForFunctionCalls(messages, globalSig)) {
+    logger.warn('[ProtocolConverter] 缺少有效签名，禁用 thinking 模式')
+    return false
   }
-  
-  // 无缓存签名，禁用 thinking
-  logger.warn('[ProtocolConverter] 有 thinking 历史但无缓存签名，禁用 thinking')
-  return false
+
+  return true
 }
 
 /**
@@ -471,7 +507,11 @@ function shouldDisableThinkingDueToHistory(messages) {
 /**
  * 将 Anthropic 消息转换为 Gemini contents 格式
  */
-function convertAnthropicMessagesToGeminiContents(messages, toolUseIdToName, { stripThinking = false } = {}) {
+function convertAnthropicMessagesToGeminiContents(
+  messages,
+  toolUseIdToName,
+  { stripThinking = false, signatureScope = null, targetModel = null } = {}
+) {
   const contents = []
   
   for (const message of messages || []) {
@@ -523,7 +563,7 @@ function convertAnthropicMessagesToGeminiContents(messages, toolUseIdToName, { s
           } else {
             // 2. 只有在客户端没有签名时，才尝试从缓存恢复
             // 这用于处理签名丢失的场景（例如 Claude CLI 某些版本不返回签名）
-            const cachedSig = signatureStore.get()
+            const cachedSig = signatureStore.get(signatureScope)
             if (cachedSig && cachedSig.length >= 50) {
               // [关键] 缓存的签名已经是 Base64 格式，不需要再次编码！
               encodedSig = cachedSig
@@ -539,6 +579,14 @@ function convertAnthropicMessagesToGeminiContents(messages, toolUseIdToName, { s
           // 无签名跳过（避免 Invalid signature 错误）
           if (!hasSignature) {
             logger.warn('[ProtocolConverter] thinking 块无有效签名，跳过')
+            continue
+          }
+
+          if (!isSignatureCompatible(encodedSig, targetModel, signatureScope)) {
+            logger.warn('[ProtocolConverter] thinking 签名与目标模型不兼容，降级为文本')
+            if (hasThinkingText) {
+              parts.push({ text: thinkingText })
+            }
             continue
           }
 
@@ -584,7 +632,7 @@ function convertAnthropicMessagesToGeminiContents(messages, toolUseIdToName, { s
             
             if (!finalSig && toolCallId) {
               // 尝试从工具签名缓存恢复
-              const cachedToolSig = signatureStore.getToolSignature(toolCallId)
+              const cachedToolSig = signatureStore.getToolSignature(toolCallId, signatureScope)
               if (cachedToolSig) {
                 finalSig = cachedToolSig
                 logger.info(`[ProtocolConverter] 从工具缓存恢复签名: ${toolCallId}`)
@@ -593,7 +641,7 @@ function convertAnthropicMessagesToGeminiContents(messages, toolUseIdToName, { s
             
             if (!finalSig) {
               // 尝试从全局缓存恢复
-              const globalSig = signatureStore.get()
+              const globalSig = signatureStore.get(signatureScope)
               if (globalSig && globalSig.length >= 50) {
                 finalSig = globalSig
                 logger.info(`[ProtocolConverter] 为 tool_use 注入全局缓存签名`)
@@ -876,13 +924,23 @@ function convertAnthropicToolChoiceToGeminiToolConfig(toolChoice) {
  * @param {Object} options - 选项
  * @returns {Object} { model, request } Gemini 请求对象
  */
-function buildGeminiRequestFromAnthropic(body, baseModel, { sessionId = null } = {}) {
+function buildGeminiRequestFromAnthropic(
+  body,
+  baseModel,
+  { sessionId = null, signatureScope = null } = {}
+) {
   // ========== 核心修复: 模型名称映射 ==========
   // Claude Code 客户端发送的模型名需要映射为 Antigravity API 支持的模型名
   const mappedModel = mapClaudeModelToGemini(baseModel)
   if (mappedModel !== baseModel) {
     logger.info(`[ProtocolConverter] 模型映射: ${baseModel} → ${mappedModel}`)
   }
+
+  const hasNetworkingTool = detectsNetworkingTool(body.tools)
+  const hasNonNetworkingTool = containsNonNetworkingTool(body.tools)
+  const targetModelForSignatures = hasNetworkingTool
+    ? getWebSearchModel()
+    : mappedModel
 
   const normalizedMessages = normalizeAnthropicMessages(body.messages || [])
   const toolUseIdToName = buildToolUseIdToNameMap(normalizedMessages || [])
@@ -892,7 +950,10 @@ function buildGeminiRequestFromAnthropic(body, baseModel, { sessionId = null } =
   if (body?.thinking?.type === 'enabled') {
     const budgetRaw = Number(body.thinking.budget_tokens)
     if (Number.isFinite(budgetRaw)) {
-      canEnableThinking = canEnableAntigravityThinking(normalizedMessages)
+      canEnableThinking = canEnableAntigravityThinking(
+        normalizedMessages,
+        signatureScope
+      )
       
       // [FIX] 检查历史消息兼容性 - 参考 Rust 版本 request.rs 行 411-437
       // 如果最后一条 assistant 消息有 tool_use 但没有 thinking，必须禁用 thinking
@@ -906,7 +967,11 @@ function buildGeminiRequestFromAnthropic(body, baseModel, { sessionId = null } =
   const contents = convertAnthropicMessagesToGeminiContents(
     normalizedMessages || [],
     toolUseIdToName,
-    { stripThinking: !canEnableThinking }
+    {
+      stripThinking: !canEnableThinking,
+      signatureScope,
+      targetModel: targetModelForSignatures
+    }
   )
   
   const systemParts = buildSystemParts(body.system)
@@ -976,11 +1041,14 @@ function buildGeminiRequestFromAnthropic(body, baseModel, { sessionId = null } =
   // ========== 联网搜索处理 ==========
   // 参考: Antigravity-Manager2/src-tauri/src/proxy/mappers/common_utils.rs resolve_request_config
   let finalModel = mappedModel
-  const hasNetworkingTool = detectsNetworkingTool(body.tools)
-  const hasNonNetworkingTool = containsNonNetworkingTool(body.tools)
   
   if (hasNetworkingTool) {
     logger.info('[ProtocolConverter] 🔍 检测到联网搜索工具请求')
+    const webSearchModel = getWebSearchModel()
+    if (finalModel !== webSearchModel) {
+      logger.info(`[ProtocolConverter] 🔄 联网搜索模型降级: ${finalModel} → ${webSearchModel}`)
+      finalModel = webSearchModel
+    }
     
     // 如果有非联网工具（本地 MCP 工具等），不能注入 googleSearch
     // 因为 Gemini v1internal 不支持同时使用 search 和 functions
@@ -994,13 +1062,6 @@ function buildGeminiRequestFromAnthropic(body, baseModel, { sessionId = null } =
       const injected = injectGoogleSearchTool(geminiRequestBody)
       
       if (injected) {
-        // 降级模型到 gemini-2.5-flash（只有该模型支持 googleSearch）
-        const webSearchModel = getWebSearchModel()
-        if (finalModel !== webSearchModel) {
-          logger.info(`[ProtocolConverter] 🔄 联网搜索模型降级: ${finalModel} → ${webSearchModel}`)
-          finalModel = webSearchModel
-        }
-        
         // 移除 toolConfig（googleSearch 不需要）
         delete geminiRequestBody.toolConfig
       }
