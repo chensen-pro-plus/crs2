@@ -3611,11 +3611,11 @@ const formatRateLimitTime = (minutes) => {
 // 获取限流原因的中文标签
 const getRateLimitReasonLabel = (reason) => {
   const labels = {
-    'QUOTA_EXHAUSTED': '配额耗尽',
-    'RATE_LIMIT_EXCEEDED': '速率限制',
-    'MODEL_CAPACITY_EXHAUSTED': '模型容量不足',
-    'SERVER_ERROR': '服务器错误',
-    'UNKNOWN': '未知原因'
+    QUOTA_EXHAUSTED: '配额耗尽',
+    RATE_LIMIT_EXCEEDED: '速率限制',
+    MODEL_CAPACITY_EXHAUSTED: '模型容量不足',
+    SERVER_ERROR: '服务器错误',
+    UNKNOWN: '未知原因'
   }
   return labels[reason] || reason || '未知原因'
 }

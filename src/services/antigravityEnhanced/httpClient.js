@@ -229,6 +229,9 @@ async function sendRequest({
   const endpoints = getEndpoints()
   
   let lastError = null
+  // 🔧 保留第一个包含详细配额信息的错误（如 quotaResetDelay）
+  // 避免被备用端点的简化错误覆盖
+  let firstQuotaError = null
   
   for (let i = 0; i < endpoints.length; i++) {
     const baseUrl = endpoints[i]
@@ -335,6 +338,24 @@ async function sendRequest({
         headers: error?.response?.headers ? JSON.stringify(error.response.headers) : null
       })
       
+      // 🔧 关键修复：检测并保存第一个包含详细配额信息的错误
+      // 避免被备用端点的简化错误覆盖（备用端点通常只返回 "Resource has been exhausted"）
+      if (status === 429 && !firstQuotaError) {
+        const hasDetailedInfo = errorData && (
+          errorData.includes('quotaResetDelay') ||
+          errorData.includes('QUOTA_EXHAUSTED') ||
+          errorData.includes('quotaResetTimeStamp')
+        )
+        if (hasDetailedInfo) {
+          logger.info(`[AntigravityEnhanced] 💾 保存第一个端点的详细配额错误信息`)
+          firstQuotaError = {
+            status,
+            retryAfter,
+            errorBody: errorData
+          }
+        }
+      }
+      
       // 如果还有备用端点且错误可重试，继续尝试
       const hasNext = i + 1 < endpoints.length
       if (hasNext && isRetryableError(error)) {
@@ -343,7 +364,8 @@ async function sendRequest({
       }
       
       // 增强错误对象：附加限流追踪所需的信息
-      error.rateLimitInfo = {
+      // 🔧 优先使用第一个端点的详细配额错误信息（如果有）
+      error.rateLimitInfo = firstQuotaError || {
         status,
         retryAfter,
         errorBody: errorData
@@ -351,6 +373,11 @@ async function sendRequest({
       
       throw error
     }
+  }
+  
+  // 🔧 如果 lastError 存在但没有 rateLimitInfo，补充第一个端点的详细信息
+  if (lastError && firstQuotaError) {
+    lastError.rateLimitInfo = firstQuotaError
   }
   
   throw lastError || new Error('所有端点请求失败')

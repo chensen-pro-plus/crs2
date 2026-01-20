@@ -351,17 +351,46 @@ async function handleMessages(req, res) {
               `[AntigravityEnhanced][${traceId}] ⚠️ 缓冲延迟失败，执行乐观重置 (Clear All)...`
             )
             
-            // 🔧 只清除内存中的限流记录，不再清除数据库状态
-            rateLimitTracker.clearAll()
+            // 🔧 关键修改：乐观重置现在会保留 QUOTA_EXHAUSTED 类型的限流
+            const resetResult = rateLimitTracker.clearAll()
+            
+            // 🔧 如果保留了配额耗尽的账号且没有清除任何记录，说明所有账号都配额耗尽
+            if (resetResult.preserved > 0 && resetResult.cleared === 0) {
+              logger.error(
+                `[AntigravityEnhanced][${traceId}] ❌ 所有 ${resetResult.preserved} 个账号配额耗尽，无法继续请求`
+              )
+              const quotaError = new Error(
+                `所有账号（${resetResult.preserved}个）配额已耗尽，请等待配额恢复后重试`
+              )
+              quotaError.status = 429
+              quotaError.isQuotaExhausted = true
+              throw quotaError
+            }
             
             // 再次重试选择账号
-            accountInfo = await unifiedGeminiScheduler.selectAccountForApiKey(
-              apiKeyData,
-              sessionHash,
-              mappedModelForScheduling,
-              { preferredOAuthProvider: 'antigravity', forceRotate: shouldRotate }
-            )
-            logger.info(`[AntigravityEnhanced][${traceId}] ✅ 乐观重置后成功获取账号`)
+            try {
+              accountInfo = await unifiedGeminiScheduler.selectAccountForApiKey(
+                apiKeyData,
+                sessionHash,
+                mappedModelForScheduling,
+                { preferredOAuthProvider: 'antigravity', forceRotate: shouldRotate }
+              )
+              logger.info(`[AntigravityEnhanced][${traceId}] ✅ 乐观重置后成功获取账号`)
+            } catch (finalError) {
+              // 🔧 最终仍然失败，检查是否所有账号都配额耗尽
+              if (resetResult.preserved > 0) {
+                logger.error(
+                  `[AntigravityEnhanced][${traceId}] ❌ 乐观重置后仍无账号可用，${resetResult.preserved} 个账号配额耗尽`
+                )
+                const quotaError = new Error(
+                  `所有可用账号配额已耗尽（${resetResult.preserved}个），请等待配额恢复`
+                )
+                quotaError.status = 429
+                quotaError.isQuotaExhausted = true
+                throw quotaError
+              }
+              throw finalError
+            }
           }
         } else {
           // 其他错误直接抛出

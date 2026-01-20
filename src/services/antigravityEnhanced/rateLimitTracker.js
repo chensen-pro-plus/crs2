@@ -106,20 +106,31 @@ class RateLimitTracker {
 
     // 1. 解析限流原因类型
     let reason
+    let reasonParsedRetryTime = null  // 🔧 从 _parseRateLimitReason 返回的 parsedRetryTime
+    
     if (status === 429) {
       logger.warn(`[RateLimitTracker] Google 429 Error Body: ${body?.substring(0, 500)}`)
-      reason = this._parseRateLimitReason(body)
-      logger.info(`[RateLimitTracker] 解析得到的限流原因: ${reason}`)
+      const parseResult = this._parseRateLimitReason(body)
+      reason = parseResult.reason
+      reasonParsedRetryTime = parseResult.parsedRetryTime
+      logger.info(`[RateLimitTracker] 解析得到的限流原因: ${reason}, 附带重试时间: ${reasonParsedRetryTime}秒`)
     } else {
       reason = RateLimitReason.SERVER_ERROR
       logger.info(`[RateLimitTracker] 5xx 错误，设置原因为: ${reason}`)
     }
 
     // 2. 解析重试时间
+    // 🔧 优先级：parsedRetryTime (从 JSON 的 quotaResetDelay 解析) > Retry-After header > body 文本匹配 > 默认值
     let retryAfterSec = null
 
-    // 优先从 Retry-After header 提取
-    if (retryAfterHeader) {
+    // 🔧 最高优先级：从 JSON 的 quotaResetDelay 解析到的时间（由 _parseRateLimitReason 返回）
+    if (reasonParsedRetryTime !== null && reasonParsedRetryTime > 0) {
+      retryAfterSec = reasonParsedRetryTime
+      logger.info(`[RateLimitTracker] ✅ 使用 JSON 解析的 quotaResetDelay: ${retryAfterSec}秒`)
+    }
+
+    // 从 Retry-After header 提取（如果上面没有获取到）
+    if (retryAfterSec === null && retryAfterHeader) {
       const parsed = parseInt(retryAfterHeader, 10)
       if (!isNaN(parsed)) {
         retryAfterSec = parsed
@@ -127,7 +138,7 @@ class RateLimitTracker {
       }
     }
 
-    // 从错误消息 body 提取
+    // 从错误消息 body 提取（如果上面没有获取到）
     if (retryAfterSec === null && body) {
       retryAfterSec = this._parseRetryTimeFromBody(body)
       if (retryAfterSec !== null) {
@@ -177,12 +188,16 @@ class RateLimitTracker {
 
   /**
    * 解析限流原因类型
+   * 🔧 修复：优先使用 JSON 中的 reason 字段，而不是依赖文本匹配
    * @private
+   * @returns {{reason: string, parsedRetryTime: number|null}} 包含原因和可能的重试时间
    */
   _parseRateLimitReason(body) {
-    if (!body) return RateLimitReason.UNKNOWN
+    if (!body) return { reason: RateLimitReason.UNKNOWN, parsedRetryTime: null }
 
-    // 尝试从 JSON 中提取 reason 字段
+    let parsedRetryTime = null
+
+    // 🔧 关键修复：优先尝试从 JSON 中提取 reason 字段
     try {
       const trimmed = body.trim()
       if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
@@ -191,52 +206,66 @@ class RateLimitTracker {
         // 路径: error.details[0].reason
         const reasonStr = json?.error?.details?.[0]?.reason
         if (reasonStr) {
+          logger.info(`[RateLimitTracker] 🎯 从 JSON 解析到限流原因: ${reasonStr}`)
+          
+          // 🔧 同时提取 quotaResetDelay（如果存在）
+          const delayStr = json?.error?.details?.[0]?.metadata?.quotaResetDelay
+          if (delayStr) {
+            parsedRetryTime = this._parseDurationString(delayStr)
+            logger.info(`[RateLimitTracker] 🎯 同时解析到 quotaResetDelay: ${delayStr} => ${parsedRetryTime}秒`)
+          }
+          
           switch (reasonStr) {
-            case 'QUOTA_EXHAUSTED': return RateLimitReason.QUOTA_EXHAUSTED
-            case 'RATE_LIMIT_EXCEEDED': return RateLimitReason.RATE_LIMIT_EXCEEDED
-            case 'MODEL_CAPACITY_EXHAUSTED': return RateLimitReason.MODEL_CAPACITY_EXHAUSTED
-            default: break
+            case 'QUOTA_EXHAUSTED': 
+              return { reason: RateLimitReason.QUOTA_EXHAUSTED, parsedRetryTime }
+            case 'RATE_LIMIT_EXCEEDED': 
+              return { reason: RateLimitReason.RATE_LIMIT_EXCEEDED, parsedRetryTime }
+            case 'MODEL_CAPACITY_EXHAUSTED': 
+              return { reason: RateLimitReason.MODEL_CAPACITY_EXHAUSTED, parsedRetryTime }
+            default: 
+              // 未知的 reason 字段，继续使用文本匹配作为兜底
+              break
           }
         }
 
         // 尝试从 message 字段进行文本匹配
         const msg = json?.error?.message?.toLowerCase() || ''
         if (msg.includes('per minute') || msg.includes('rate limit')) {
-          return RateLimitReason.RATE_LIMIT_EXCEEDED
+          return { reason: RateLimitReason.RATE_LIMIT_EXCEEDED, parsedRetryTime }
         }
       }
     } catch (e) {
       // JSON 解析失败，继续使用文本匹配
     }
 
-    // 从消息文本判断
+    // 从消息文本判断（兜底逻辑）
     const bodyLower = body.toLowerCase()
     // 优先判断分钟级限制，避免将 TPM 误判为 Quota
     if (bodyLower.includes('per minute') || bodyLower.includes('rate limit') || bodyLower.includes('too many requests')) {
-      return RateLimitReason.RATE_LIMIT_EXCEEDED
+      return { reason: RateLimitReason.RATE_LIMIT_EXCEEDED, parsedRetryTime }
     } 
     // 注意：capacity 要优先于 exhausted 判断！
     // 因为 "No capacity available" 的通用错误消息可能包含 "exhausted"
     else if (bodyLower.includes('capacity') || bodyLower.includes('no capacity')) {
-      return RateLimitReason.MODEL_CAPACITY_EXHAUSTED
+      return { reason: RateLimitReason.MODEL_CAPACITY_EXHAUSTED, parsedRetryTime }
     } 
-    // 🛡️ 特殊处理：Google 通用错误 "Resource has been exhausted (e.g. check quota)."
-    // 这不是真正的配额耗尽，"e.g. check quota" 只是示例文本
-    // 这种通用错误通常出现在备用端点，应该当作临时问题处理
+    // 🔧 修复：通用错误 "Resource has been exhausted (e.g. check quota)" 
+    // 这种情况通常是备用端点返回的简化错误，应该当作临时问题
+    // 但如果我们已经从第一个端点获取到了详细信息（parsedRetryTime），则使用那个
     else if (bodyLower.includes('e.g. check quota') || bodyLower.includes('(e.g.')) {
       logger.info(`[RateLimitTracker] 检测到 Google 通用错误消息，当作临时容量问题处理`)
-      return RateLimitReason.MODEL_CAPACITY_EXHAUSTED
+      return { reason: RateLimitReason.MODEL_CAPACITY_EXHAUSTED, parsedRetryTime }
     }
     // 只有明确提到 quota（且不是示例文本）才认为是配额问题
     else if (bodyLower.includes('quota')) {
-      return RateLimitReason.QUOTA_EXHAUSTED
+      return { reason: RateLimitReason.QUOTA_EXHAUSTED, parsedRetryTime }
     } else if (bodyLower.includes('exhausted')) {
       // exhausted 放最后，作为兜底，但默认当作临时容量问题
       // 因为无法确定是配额还是容量问题时，容量问题更常见且恢复更快
-      return RateLimitReason.MODEL_CAPACITY_EXHAUSTED
+      return { reason: RateLimitReason.MODEL_CAPACITY_EXHAUSTED, parsedRetryTime }
     }
 
-    return RateLimitReason.UNKNOWN
+    return { reason: RateLimitReason.UNKNOWN, parsedRetryTime }
   }
 
   /**
@@ -449,22 +478,82 @@ class RateLimitTracker {
 
   /**
    * 清除所有限流记录 (乐观重置策略)
-   * 🔧 同时清除数据库中的限流状态
+   * 🔧 重要修改：排除 QUOTA_EXHAUSTED 类型的限流
+   * 因为配额耗尽需要数小时恢复，乐观重置只会导致无效请求
    */
   clearAll() {
-    const count = this.limits.size
-    const accountIds = Array.from(this.limits.keys())
+    const now = Date.now()
+    let clearedCount = 0
+    let preservedQuotaCount = 0
+    const clearedAccountIds = []
     
-    this.limits.clear()
-    this.failureCounts.clear()
-    logger.warn(`[RateLimitTracker] 🔄 乐观重置: 清除了 ${count} 个限流记录`)
+    for (const [accountId, info] of this.limits.entries()) {
+      // 🔧 关键修复：保留 QUOTA_EXHAUSTED 类型的限流记录
+      if (info.reason === RateLimitReason.QUOTA_EXHAUSTED && info.resetTime > now) {
+        preservedQuotaCount++
+        logger.info(
+          `[RateLimitTracker] 🛡️ 保留配额耗尽账号 ${accountId}，剩余 ${Math.ceil((info.resetTime - now) / 1000)}秒恢复`
+        )
+        continue
+      }
+      
+      // 清除非 QUOTA_EXHAUSTED 的记录
+      this.limits.delete(accountId)
+      this.failureCounts.delete(accountId)
+      clearedAccountIds.push(accountId)
+      clearedCount++
+    }
     
-    // 🔧 同步清除数据库中的限流状态
-    if (accountIds.length > 0) {
-      for (const accountId of accountIds) {
-        this._clearFromDatabase(accountId)
+    if (clearedCount > 0 || preservedQuotaCount > 0) {
+      logger.warn(
+        `[RateLimitTracker] 🔄 乐观重置: 清除了 ${clearedCount} 个限流记录，` +
+        `保留了 ${preservedQuotaCount} 个配额耗尽账号`
+      )
+    }
+    
+    // 🔧 只清除被移除账号的数据库状态
+    for (const accountId of clearedAccountIds) {
+      this._clearFromDatabase(accountId)
+    }
+    
+    return { cleared: clearedCount, preserved: preservedQuotaCount }
+  }
+  
+  /**
+   * 获取当前可用账号数（不在限流中或已过期）
+   * @returns {number}
+   */
+  getAvailableCount(totalAccountIds) {
+    const now = Date.now()
+    let availableCount = 0
+    
+    for (const accountId of totalAccountIds) {
+      const info = this.limits.get(accountId)
+      // 如果没有限流记录，或者限流已过期，则可用
+      if (!info || info.resetTime <= now) {
+        availableCount++
       }
     }
+    
+    return availableCount
+  }
+  
+  /**
+   * 检查是否所有账号都是 QUOTA_EXHAUSTED 状态
+   * @returns {boolean}
+   */
+  areAllQuotaExhausted(accountIds) {
+    const now = Date.now()
+    let quotaExhaustedCount = 0
+    
+    for (const accountId of accountIds) {
+      const info = this.limits.get(accountId)
+      if (info && info.reason === RateLimitReason.QUOTA_EXHAUSTED && info.resetTime > now) {
+        quotaExhaustedCount++
+      }
+    }
+    
+    return quotaExhaustedCount === accountIds.length && accountIds.length > 0
   }
 
   // ============================================================================
