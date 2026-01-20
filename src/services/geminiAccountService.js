@@ -1184,7 +1184,58 @@ async function setAccountRateLimited(accountId, isLimited = true) {
   await updateAccount(accountId, updates)
 }
 
+/**
+ * 设置账户限流状态（带详细信息）
+ * 用于 /antigravity-enhanced/api 的智能限流持久化
+ *
+ * @param {string} accountId - 账户 ID
+ * @param {Object} details - 限流详情
+ * @param {string} details.reason - 限流原因 (QUOTA_EXHAUSTED, RATE_LIMIT_EXCEEDED, MODEL_CAPACITY_EXHAUSTED, SERVER_ERROR)
+ * @param {number} details.retryAfterSec - 重试等待秒数
+ * @param {string} details.rateLimitEndAt - 限流结束时间 ISO 字符串
+ */
+async function setAccountRateLimitedWithDetails(accountId, details = {}) {
+  const { reason, retryAfterSec, rateLimitEndAt } = details
+
+  const updates = {
+    rateLimitStatus: 'limited',
+    rateLimitedAt: new Date().toISOString(),
+    // 新增字段：限流原因
+    rateLimitReason: reason || 'UNKNOWN',
+    // 新增字段：重试等待秒数
+    rateLimitRetryAfterSec: String(retryAfterSec || 60),
+    // 新增字段：限流结束时间（精确）
+    rateLimitEndAt:
+      rateLimitEndAt || new Date(Date.now() + (retryAfterSec || 60) * 1000).toISOString()
+  }
+
+  logger.info(
+    `[GeminiAccountService] 📊 设置账户 ${accountId} 限流状态: reason=${reason}, retryAfterSec=${retryAfterSec}`
+  )
+  await updateAccount(accountId, updates)
+}
+
+/**
+ * 清除账户限流状态（从数据库）
+ * 用于 /antigravity-enhanced/api 请求成功后清除限流记录
+ *
+ * @param {string} accountId - 账户 ID
+ */
+async function clearAccountRateLimit(accountId) {
+  const updates = {
+    rateLimitStatus: '',
+    rateLimitedAt: '',
+    rateLimitReason: '',
+    rateLimitRetryAfterSec: '',
+    rateLimitEndAt: ''
+  }
+
+  logger.debug(`[GeminiAccountService] ✅ 清除账户 ${accountId} 限流状态`)
+  await updateAccount(accountId, updates)
+}
+
 // 获取账户的限流信息（参考 claudeAccountService 的实现）
+// 🔧 已增强：支持 rateLimitEndAt 字段计算动态恢复时间
 async function getAccountRateLimitInfo(accountId) {
   try {
     const account = await getAccount(accountId)
@@ -1193,27 +1244,49 @@ async function getAccountRateLimitInfo(accountId) {
     }
 
     if (account.rateLimitStatus === 'limited' && account.rateLimitedAt) {
-      const rateLimitedAt = new Date(account.rateLimitedAt)
       const now = new Date()
-      const minutesSinceRateLimit = Math.floor((now - rateLimitedAt) / (1000 * 60))
 
-      // Gemini 限流持续时间为 1 小时
-      const minutesRemaining = Math.max(0, 60 - minutesSinceRateLimit)
-      const rateLimitEndAt = new Date(rateLimitedAt.getTime() + 60 * 60 * 1000).toISOString()
+      // 优先使用 rateLimitEndAt（精确恢复时间），否则回退到固定1小时
+      let endAt
+      if (account.rateLimitEndAt) {
+        endAt = new Date(account.rateLimitEndAt)
+      } else {
+        // 回退逻辑：限流开始时间 + 1小时
+        const rateLimitedAt = new Date(account.rateLimitedAt)
+        endAt = new Date(rateLimitedAt.getTime() + 60 * 60 * 1000)
+      }
+
+      const minutesRemaining = Math.max(0, Math.ceil((endAt - now) / (1000 * 60)))
+
+      // 如果剩余时间 <= 0，自动清除限流状态
+      if (minutesRemaining <= 0) {
+        // 异步清除，不阻塞返回
+        clearAccountRateLimit(accountId).catch((err) => {
+          logger.warn(`[GeminiAccountService] 清除过期限流状态失败: ${err.message}`)
+        })
+
+        return {
+          isRateLimited: false,
+          rateLimitedAt: null,
+          rateLimitReason: null,
+          minutesRemaining: 0,
+          rateLimitEndAt: null
+        }
+      }
 
       return {
-        isRateLimited: minutesRemaining > 0,
+        isRateLimited: true,
         rateLimitedAt: account.rateLimitedAt,
-        minutesSinceRateLimit,
+        rateLimitReason: account.rateLimitReason || 'UNKNOWN',
         minutesRemaining,
-        rateLimitEndAt
+        rateLimitEndAt: endAt.toISOString()
       }
     }
 
     return {
       isRateLimited: false,
       rateLimitedAt: null,
-      minutesSinceRateLimit: 0,
+      rateLimitReason: null,
       minutesRemaining: 0,
       rateLimitEndAt: null
     }
@@ -1961,6 +2034,8 @@ module.exports = {
   refreshAccountToken,
   markAccountUsed,
   setAccountRateLimited,
+  setAccountRateLimitedWithDetails,
+  clearAccountRateLimit,
   getAccountRateLimitInfo,
   isTokenExpired,
   getOauthClient,

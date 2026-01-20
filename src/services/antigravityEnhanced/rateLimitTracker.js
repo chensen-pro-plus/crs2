@@ -65,6 +65,13 @@ class RateLimitTracker {
     if (hadFailures || hadLimits) {
       logger.debug(`[RateLimitTracker] ✅ 账号 ${accountId} 请求成功，已重置失败计数和限流记录`)
     }
+    
+    // 🔧 只有内存中确实有限流记录时才清除数据库
+    // hadFailures 只是连续失败计数，不会写入数据库
+    // hadLimits 才表示调用过 parseFromError 并写入了数据库
+    if (hadLimits) {
+      this._clearFromDatabase(accountId)
+    }
   }
 
   /**
@@ -159,6 +166,9 @@ class RateLimitTracker {
     // 5. 判断是否应该停止重试
     // QUOTA_EXHAUSTED 时停止重试，保护账号池
     const shouldStop = reason === RateLimitReason.QUOTA_EXHAUSTED
+
+    // 6. 🔧 持久化到数据库（异步，不阻塞返回）
+    this._persistToDatabase(accountId, reason, retryAfterSec)
 
     return { reason, retryAfterSec, shouldStop }
   }
@@ -450,12 +460,64 @@ class RateLimitTracker {
 
   /**
    * 清除所有限流记录 (乐观重置策略)
+   * 🔧 同时清除数据库中的限流状态
    */
   clearAll() {
     const count = this.limits.size
+    const accountIds = Array.from(this.limits.keys())
+    
     this.limits.clear()
     this.failureCounts.clear()
     logger.warn(`[RateLimitTracker] 🔄 乐观重置: 清除了 ${count} 个限流记录`)
+    
+    // 🔧 同步清除数据库中的限流状态
+    if (accountIds.length > 0) {
+      for (const accountId of accountIds) {
+        this._clearFromDatabase(accountId)
+      }
+    }
+  }
+
+  // ============================================================================
+  // 数据库持久化方法
+  // ============================================================================
+
+  /**
+   * 持久化限流状态到数据库
+   * 异步执行，不影响主流程
+   * @private
+   */
+  _persistToDatabase(accountId, reason, retryAfterSec) {
+    // 延迟加载避免循环依赖
+    const geminiAccountService = require('../geminiAccountService')
+    
+    // 异步执行，不阻塞返回
+    geminiAccountService.setAccountRateLimitedWithDetails(accountId, {
+      reason,
+      retryAfterSec,
+      rateLimitEndAt: new Date(Date.now() + retryAfterSec * 1000).toISOString()
+    }).then(() => {
+      logger.debug(`[RateLimitTracker] 📊 限流状态已持久化到数据库: ${accountId}`)
+    }).catch(err => {
+      logger.warn(`[RateLimitTracker] 持久化限流状态失败: ${err.message}`)
+    })
+  }
+
+  /**
+   * 清除数据库中的限流状态
+   * 异步执行，不影响主流程
+   * @private
+   */
+  _clearFromDatabase(accountId) {
+    // 延迟加载避免循环依赖
+    const geminiAccountService = require('../geminiAccountService')
+    
+    // 异步执行，不阻塞返回
+    geminiAccountService.clearAccountRateLimit(accountId).then(() => {
+      logger.debug(`[RateLimitTracker] ✅ 数据库限流状态已清除: ${accountId}`)
+    }).catch(err => {
+      logger.warn(`[RateLimitTracker] 清除数据库限流状态失败: ${err.message}`)
+    })
   }
 }
 

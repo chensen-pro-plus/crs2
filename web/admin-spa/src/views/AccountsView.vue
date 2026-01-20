@@ -732,6 +732,18 @@
                         "
                         >({{ formatRateLimitTime(account.rateLimitStatus.minutesRemaining) }})</span
                       >
+                      <el-tooltip
+                        v-if="
+                          account.rateLimitStatus &&
+                          typeof account.rateLimitStatus === 'object' &&
+                          account.rateLimitStatus.rateLimitReason
+                        "
+                        :content="getRateLimitReasonLabel(account.rateLimitStatus.rateLimitReason)"
+                        effect="dark"
+                        placement="top"
+                      >
+                        <i class="fas fa-info-circle ml-1 cursor-help text-yellow-600" />
+                      </el-tooltip>
                     </span>
                     <span
                       v-if="account.schedulable === false"
@@ -3594,6 +3606,18 @@ const formatRateLimitTime = (minutes) => {
     // 不到1小时，只显示分钟
     return `${mins}分钟`
   }
+}
+
+// 获取限流原因的中文标签
+const getRateLimitReasonLabel = (reason) => {
+  const labels = {
+    'QUOTA_EXHAUSTED': '配额耗尽',
+    'RATE_LIMIT_EXCEEDED': '速率限制',
+    'MODEL_CAPACITY_EXHAUSTED': '模型容量不足',
+    'SERVER_ERROR': '服务器错误',
+    'UNKNOWN': '未知原因'
+  }
+  return labels[reason] || reason || '未知原因'
 }
 
 // 检查账户是否被限流
