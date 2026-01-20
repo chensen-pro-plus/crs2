@@ -880,12 +880,16 @@ async function getAllAccounts() {
           ? {
               isRateLimited: rateLimitInfo.isRateLimited,
               rateLimitedAt: rateLimitInfo.rateLimitedAt,
-              minutesRemaining: rateLimitInfo.minutesRemaining
+              minutesRemaining: rateLimitInfo.minutesRemaining,
+              rateLimitReason: rateLimitInfo.rateLimitReason || null,
+              rateLimitEndAt: rateLimitInfo.rateLimitEndAt || null
             }
           : {
               isRateLimited: false,
               rateLimitedAt: null,
-              minutesRemaining: 0
+              minutesRemaining: 0,
+              rateLimitReason: null,
+              rateLimitEndAt: null
             }
       })
     }
@@ -1027,14 +1031,32 @@ function isSubscriptionExpired(account) {
 
 // 检查账户是否被限流
 function isRateLimited(account) {
-  if (account.rateLimitStatus === 'limited' && account.rateLimitedAt) {
-    const limitedAt = new Date(account.rateLimitedAt).getTime()
-    const now = Date.now()
-    const limitDuration = 60 * 60 * 1000 // 1小时
-
-    return now < limitedAt + limitDuration
+  if (!account || account.rateLimitStatus !== 'limited') {
+    return false
   }
-  return false
+
+  const now = Date.now()
+  let endAtMs = null
+
+  if (account.rateLimitEndAt) {
+    const parsed = Date.parse(account.rateLimitEndAt)
+    if (!isNaN(parsed)) {
+      endAtMs = parsed
+    }
+  }
+
+  if (endAtMs === null && account.rateLimitedAt) {
+    const limitedAt = Date.parse(account.rateLimitedAt)
+    if (!isNaN(limitedAt)) {
+      endAtMs = limitedAt + 60 * 60 * 1000 // 回退到固定1小时
+    }
+  }
+
+  if (endAtMs === null) {
+    return false
+  }
+
+  return now < endAtMs
 }
 
 // 刷新账户 token
@@ -1243,20 +1265,48 @@ async function getAccountRateLimitInfo(accountId) {
       return null
     }
 
-    if (account.rateLimitStatus === 'limited' && account.rateLimitedAt) {
+    if (
+      account.rateLimitStatus === 'limited' &&
+      (account.rateLimitedAt || account.rateLimitEndAt)
+    ) {
       const now = new Date()
 
       // 优先使用 rateLimitEndAt（精确恢复时间），否则回退到固定1小时
-      let endAt
+      let endAt = null
       if (account.rateLimitEndAt) {
-        endAt = new Date(account.rateLimitEndAt)
-      } else {
-        // 回退逻辑：限流开始时间 + 1小时
-        const rateLimitedAt = new Date(account.rateLimitedAt)
-        endAt = new Date(rateLimitedAt.getTime() + 60 * 60 * 1000)
+        const parsedEndAt = new Date(account.rateLimitEndAt)
+        if (!isNaN(parsedEndAt.getTime())) {
+          endAt = parsedEndAt
+        }
       }
 
-      const minutesRemaining = Math.max(0, Math.ceil((endAt - now) / (1000 * 60)))
+      if (!endAt && account.rateLimitedAt) {
+        // 回退逻辑：限流开始时间 + 1小时
+        const rateLimitedAt = new Date(account.rateLimitedAt)
+        if (!isNaN(rateLimitedAt.getTime())) {
+          endAt = new Date(rateLimitedAt.getTime() + 60 * 60 * 1000)
+        }
+      }
+
+      if (!endAt) {
+        // 异步清除无效限流状态，不阻塞返回
+        clearAccountRateLimit(accountId).catch((err) => {
+          logger.warn(`[GeminiAccountService] 清除无效限流状态失败: ${err.message}`)
+        })
+
+        return {
+          isRateLimited: false,
+          rateLimitedAt: null,
+          rateLimitReason: null,
+          minutesRemaining: 0,
+          rateLimitEndAt: null
+        }
+      }
+
+      const minutesRemaining = Math.max(
+        0,
+        Math.ceil((endAt.getTime() - now.getTime()) / (1000 * 60))
+      )
 
       // 如果剩余时间 <= 0，自动清除限流状态
       if (minutesRemaining <= 0) {

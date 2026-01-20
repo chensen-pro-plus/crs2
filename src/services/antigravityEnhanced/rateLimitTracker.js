@@ -42,6 +42,8 @@ class RateLimitTracker {
     this.limits = new Map()
     /** @type {Map<string, number>} 连续失败计数 */
     this.failureCounts = new Map()
+    /** @type {Set<string>} 记录已尝试清理数据库限流状态的账号 */
+    this.dbClearAttempted = new Set()
   }
 
   /**
@@ -66,10 +68,10 @@ class RateLimitTracker {
       logger.debug(`[RateLimitTracker] ✅ 账号 ${accountId} 请求成功，已重置失败计数和限流记录`)
     }
     
-    // 🔧 只有内存中确实有限流记录时才清除数据库
-    // hadFailures 只是连续失败计数，不会写入数据库
-    // hadLimits 才表示调用过 parseFromError 并写入了数据库
-    if (hadLimits) {
+    const shouldClearDb = hadFailures || hadLimits || !this.dbClearAttempted.has(accountId)
+    if (shouldClearDb) {
+      this.dbClearAttempted.add(accountId)
+      // 🔧 清除数据库限流状态（最佳努力，避免每次成功都写库）
       this._clearFromDatabase(accountId)
     }
   }
@@ -393,19 +395,6 @@ class RateLimitTracker {
    */
   getInfo(accountId) {
     return this.limits.get(accountId) || null
-  }
-
-  /**
-   * 标记账号请求成功，重置连续失败计数
-   * @param {string} accountId
-   */
-  markSuccess(accountId) {
-    if (this.failureCounts.has(accountId)) {
-      logger.debug(`[RateLimitTracker] 账号 ${accountId} 请求成功，已重置失败计数`)
-      this.failureCounts.delete(accountId)
-    }
-    // 同时清除限流记录
-    this.limits.delete(accountId)
   }
 
   /**

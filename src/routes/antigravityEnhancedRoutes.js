@@ -16,6 +16,7 @@ const logger = require('../utils/logger')
 
 // 导入增强服务
 const { handleMessages, handleModels, healthCheck } = require('../services/antigravityEnhanced')
+const standardGeminiRoutes = require('./standardGeminiRoutes')
 
 /**
  * POST /v1/messages
@@ -118,5 +119,8 @@ router.get('/', (req, res) => {
     features: ['Warmup 请求拦截', '自动 Stream 转换', '后台任务智能降级', '多策略退避重试']
   })
 })
+
+// Gemini 原生协议路由（/v1beta 等），复用标准 Gemini 处理器
+router.use(standardGeminiRoutes)
 
 module.exports = router
