@@ -259,8 +259,34 @@ async function proxyRequest(req, res, apiKeyData = null) {
   const startTime = Date.now()
   const isStream = isStreamRequest(req)
 
-  // 构建目标 URL，保留原始路径
-  const targetUrl = getTargetUrl(req.originalUrl.replace(/^\/cliproxy\/api/, ''))
+  // 🔄 处理 URL 路径中的模型名映射（支持 Gemini API 格式：/v1beta/models/{model}:action）
+  // 例如：/v1beta/models/gemini-3-pro-high:streamGenerateContent -> /v1beta/models/gemini-3-pro-preview:streamGenerateContent
+  let modifiedPath = req.originalUrl.replace(/^\/cliproxy\/api/, '')
+  // 用于存储 URL 中解析的模型名
+  let urlOriginalModel = null
+  let urlMappedModel = null
+
+  // 匹配 Gemini API 的模型路径格式：/v1beta/models/{model}:action 或 /v1beta/models/{model}
+  const geminiModelRegex = /^(\/v1beta\/models\/)([^/:]+)([:/].*)?$/
+  const match = modifiedPath.split('?')[0].match(geminiModelRegex) // 先去除 query string 再匹配
+
+  if (match) {
+    const prefix = match[1] // /v1beta/models/
+    urlOriginalModel = match[2] // gemini-3-pro-high
+    const suffix = match[3] || '' // :streamGenerateContent 或空
+    const queryString = modifiedPath.includes('?') ? `?${modifiedPath.split('?')[1]}` : ''
+
+    // 应用模型映射
+    urlMappedModel = cliproxyapiConfig.getTargetModel(urlOriginalModel)
+
+    if (urlMappedModel !== urlOriginalModel) {
+      modifiedPath = `${prefix}${urlMappedModel}${suffix}${queryString}`
+      logger.info(`[CLIProxyAPI] 🔄 URL路径模型映射: "${urlOriginalModel}" -> "${urlMappedModel}"`)
+    }
+  }
+
+  // 构建目标 URL
+  const targetUrl = getTargetUrl(modifiedPath)
 
   logger.info(`[CLIProxyAPI] 转发请求: ${req.method} ${req.originalUrl} -> ${targetUrl.href}`, {
     stream: isStream,
