@@ -22,7 +22,7 @@ module.exports = {
   enabled: process.env.CLIPROXYAPI_ENABLED !== 'false',
 
   // 上游 CLIProxyAPI 的 API 密钥（写死在这里，转发时自动添加）
-  upstreamApiKey: process.env.CLIPROXYAPI_UPSTREAM_KEY || 'your-api-key-1',
+  upstreamApiKey: process.env.CLIPROXYAPI_UPSTREAM_KEY || 'cd_ba6467cdc59c2488a919edd1e222adee569e804bf08b814eed2524314a710346',
 
   // 🔄 模型名称映射配置
   // 将用户请求中的模型名映射到 CLIProxyAPI 实际使用的模型名
