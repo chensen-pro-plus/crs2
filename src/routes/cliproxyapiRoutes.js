@@ -13,6 +13,7 @@ const router = express.Router()
 const logger = require('../utils/logger')
 const cliproxyapiService = require('../services/cliproxyapiService')
 const cliproxyapiConfig = require('../../config/cliproxyapi')
+const { authenticateApiKey } = require('../middleware/auth')
 
 /**
  * 中间件：检查服务是否启用
@@ -105,14 +106,17 @@ router.post(['/api/event_logging/batch', '/event_logging/batch'], (req, res) => 
  *
  * Claude 格式消息 API
  * 转发到 CLIProxyAPI 处理
+ * 需要 API Key 认证
  */
-router.post('/v1/messages', async (req, res) => {
+router.post('/v1/messages', authenticateApiKey, async (req, res) => {
   try {
+    const apiKeyData = req.apiKey // 从认证中间件获取
     logger.info('[CLIProxyAPI] 接收 Claude 消息请求', {
       model: req.body?.model,
-      stream: req.body?.stream
+      stream: req.body?.stream,
+      apiKeyId: apiKeyData?.id
     })
-    await cliproxyapiService.proxyRequest(req, res)
+    await cliproxyapiService.proxyRequest(req, res, apiKeyData)
   } catch (error) {
     logger.error('[CLIProxyAPI] Claude 消息请求失败:', error)
     if (!res.headersSent) {
@@ -132,14 +136,17 @@ router.post('/v1/messages', async (req, res) => {
  *
  * OpenAI 格式 Chat API
  * 转发到 CLIProxyAPI 处理
+ * 需要 API Key 认证
  */
-router.post('/v1/chat/completions', async (req, res) => {
+router.post('/v1/chat/completions', authenticateApiKey, async (req, res) => {
   try {
+    const apiKeyData = req.apiKey // 从认证中间件获取
     logger.info('[CLIProxyAPI] 接收 OpenAI Chat 请求', {
       model: req.body?.model,
-      stream: req.body?.stream
+      stream: req.body?.stream,
+      apiKeyId: apiKeyData?.id
     })
-    await cliproxyapiService.proxyRequest(req, res)
+    await cliproxyapiService.proxyRequest(req, res, apiKeyData)
   } catch (error) {
     logger.error('[CLIProxyAPI] OpenAI Chat 请求失败:', error)
     if (!res.headersSent) {
@@ -179,11 +186,15 @@ router.get('/v1/models', async (req, res) => {
  *
  * 所有未匹配的请求都透明转发到 CLIProxyAPI
  * 支持 CLIProxyAPI 的其他端点（如 Gemini、Codex 等格式）
+ * 需要 API Key 认证
  */
-router.all('*', async (req, res) => {
+router.all('*', authenticateApiKey, async (req, res) => {
   try {
-    logger.info(`[CLIProxyAPI] 通配转发: ${req.method} ${req.originalUrl}`)
-    await cliproxyapiService.proxyRequest(req, res)
+    const apiKeyData = req.apiKey // 从认证中间件获取
+    logger.info(`[CLIProxyAPI] 通配转发: ${req.method} ${req.originalUrl}`, {
+      apiKeyId: apiKeyData?.id
+    })
+    await cliproxyapiService.proxyRequest(req, res, apiKeyData)
   } catch (error) {
     logger.error('[CLIProxyAPI] 通配转发失败:', error)
     if (!res.headersSent) {
