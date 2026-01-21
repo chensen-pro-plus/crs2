@@ -160,7 +160,8 @@ class UnifiedGeminiScheduler {
           // 验证映射的账户是否仍然可用
           const isAvailable = await this._isAccountAvailable(
             mappedAccount.accountId,
-            mappedAccount.accountType
+            mappedAccount.accountType,
+            requestedModel
           )
           if (isAvailable) {
             // 🚀 智能会话续期（续期 unified 映射键，按配置）
@@ -267,8 +268,8 @@ class UnifiedGeminiScheduler {
           this._isActive(boundAccount.isActive) &&
           boundAccount.status !== 'error'
         ) {
-          // 🔧 使用内存限流检查
-          const isRateLimited = rateLimitTracker.isRateLimited(accountId)
+          // 🔧 使用内存限流检查 (模型级别)
+          const isRateLimited = rateLimitTracker.isRateLimitedForModel(accountId, requestedModel)
           if (!isRateLimited) {
             // 检查模型支持
             if (
@@ -325,8 +326,11 @@ class UnifiedGeminiScheduler {
           ) {
             return availableAccounts
           }
-          // 🔧 使用内存限流检查
-          const isRateLimited = rateLimitTracker.isRateLimited(boundAccount.id)
+          // 🔧 使用内存限流检查 (模型级别)
+          const isRateLimited = rateLimitTracker.isRateLimitedForModel(
+            boundAccount.id,
+            requestedModel
+          )
           if (!isRateLimited) {
             // 检查模型支持
             if (
@@ -407,8 +411,8 @@ class UnifiedGeminiScheduler {
           }
         }
 
-        // 🔧 使用内存限流检查
-        const isRateLimited = rateLimitTracker.isRateLimited(account.id)
+        // 🔧 使用内存限流检查 (模型级别)
+        const isRateLimited = rateLimitTracker.isRateLimitedForModel(account.id, requestedModel)
         if (!isRateLimited) {
           availableAccounts.push({
             ...account,
@@ -445,8 +449,8 @@ class UnifiedGeminiScheduler {
             }
           }
 
-          // 🔧 使用内存限流检查
-          const isRateLimited = rateLimitTracker.isRateLimited(account.id)
+          // 🔧 使用内存限流检查 (模型级别)
+          const isRateLimited = rateLimitTracker.isRateLimitedForModel(account.id, requestedModel)
           if (!isRateLimited) {
             availableAccounts.push({
               ...account,
@@ -482,7 +486,7 @@ class UnifiedGeminiScheduler {
   }
 
   // 🔍 检查账户是否可用
-  async _isAccountAvailable(accountId, accountType) {
+  async _isAccountAvailable(accountId, accountType, model = null) {
     try {
       if (accountType === 'gemini') {
         const account = await geminiAccountService.getAccount(accountId)
@@ -494,8 +498,8 @@ class UnifiedGeminiScheduler {
           logger.info(`🚫 Gemini account ${accountId} is not schedulable`)
           return false
         }
-        // 🔧 使用内存限流检查
-        return !rateLimitTracker.isRateLimited(accountId)
+        // 🔧 使用内存限流检查 (模型级别)
+        return !rateLimitTracker.isRateLimitedForModel(accountId, model)
       } else if (accountType === 'gemini-api') {
         const account = await geminiApiAccountService.getAccount(accountId)
         if (!account || !this._isActive(account.isActive) || account.status === 'error') {
@@ -506,8 +510,8 @@ class UnifiedGeminiScheduler {
           logger.info(`🚫 Gemini-API account ${accountId} is not schedulable`)
           return false
         }
-        // 🔧 使用内存限流检查
-        return !rateLimitTracker.isRateLimited(accountId)
+        // 🔧 使用内存限流检查 (模型级别)
+        return !rateLimitTracker.isRateLimitedForModel(accountId, model)
       }
       return false
     } catch (error) {
@@ -736,7 +740,8 @@ class UnifiedGeminiScheduler {
           if (memberIds.includes(mappedAccount.accountId)) {
             const isAvailable = await this._isAccountAvailable(
               mappedAccount.accountId,
-              mappedAccount.accountType
+              mappedAccount.accountType,
+              requestedModel
             )
             if (isAvailable) {
               // 🚀 智能会话续期（续期 unified 映射键，按配置）
@@ -815,8 +820,8 @@ class UnifiedGeminiScheduler {
             }
           }
 
-          // 🔧 使用内存限流检查
-          const isRateLimited = rateLimitTracker.isRateLimited(account.id)
+          // 🔧 使用内存限流检查 (模型级别)
+          const isRateLimited = rateLimitTracker.isRateLimitedForModel(account.id, requestedModel)
           if (!isRateLimited) {
             availableAccounts.push({
               ...account,

@@ -715,36 +715,67 @@
                                 : '异常'
                       }}
                     </span>
-                    <span
+                    <div
                       v-if="
                         (account.rateLimitStatus && account.rateLimitStatus.isRateLimited) ||
                         account.rateLimitStatus === 'limited'
                       "
-                      class="inline-flex items-center rounded-full bg-yellow-100 px-3 py-1 text-xs font-semibold text-yellow-800"
+                      class="flex flex-col gap-1"
                     >
-                      <i class="fas fa-exclamation-triangle mr-1" />
-                      限流中
                       <span
+                        class="inline-flex items-center rounded-full bg-yellow-100 px-3 py-1 text-xs font-semibold text-yellow-800"
+                      >
+                        <i class="fas fa-exclamation-triangle mr-1" />
+                        限流中
+                        <span
+                          v-if="
+                            account.rateLimitStatus &&
+                            typeof account.rateLimitStatus === 'object' &&
+                            account.rateLimitStatus.minutesRemaining > 0
+                          "
+                        >
+                          ({{ formatRateLimitTime(account.rateLimitStatus.minutesRemaining) }})
+                        </span>
+                        <el-tooltip
+                          v-if="
+                            account.rateLimitStatus &&
+                            typeof account.rateLimitStatus === 'object' &&
+                            account.rateLimitStatus.rateLimitReason
+                          "
+                          :content="
+                            getRateLimitReasonLabel(account.rateLimitStatus.rateLimitReason)
+                          "
+                          effect="dark"
+                          placement="top"
+                        >
+                          <i class="fas fa-info-circle ml-1 cursor-help text-yellow-600" />
+                        </el-tooltip>
+                      </span>
+
+                      <!-- 🔧 新增：模型级别限流详情展示 -->
+                      <div
                         v-if="
                           account.rateLimitStatus &&
-                          typeof account.rateLimitStatus === 'object' &&
-                          account.rateLimitStatus.minutesRemaining > 0
+                          account.rateLimitStatus.modelRateLimits &&
+                          Object.keys(account.rateLimitStatus.modelRateLimits).length > 0
                         "
-                        >({{ formatRateLimitTime(account.rateLimitStatus.minutesRemaining) }})</span
+                        class="flex flex-col gap-1 px-1"
                       >
-                      <el-tooltip
-                        v-if="
-                          account.rateLimitStatus &&
-                          typeof account.rateLimitStatus === 'object' &&
-                          account.rateLimitStatus.rateLimitReason
-                        "
-                        :content="getRateLimitReasonLabel(account.rateLimitStatus.rateLimitReason)"
-                        effect="dark"
-                        placement="top"
-                      >
-                        <i class="fas fa-info-circle ml-1 cursor-help text-yellow-600" />
-                      </el-tooltip>
-                    </span>
+                        <div
+                          v-for="(limit, model) in account.rateLimitStatus.modelRateLimits"
+                          :key="model"
+                          class="flex items-center justify-between text-[10px] text-yellow-700 dark:text-yellow-500"
+                        >
+                          <div class="flex items-center gap-1 overflow-hidden">
+                            <i class="fas fa-microchip scale-75 opacity-70" />
+                            <span class="truncate font-medium" :title="model">{{ model }}</span>
+                          </div>
+                          <span class="ml-2 scale-90 whitespace-nowrap opacity-80">
+                            {{ formatRateLimitTime(limit.minutesRemaining) }}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
                     <span
                       v-if="account.schedulable === false"
                       class="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-700"

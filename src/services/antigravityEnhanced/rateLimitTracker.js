@@ -35,44 +35,67 @@ const RateLimitReason = {
 /**
  * 限流追踪器类
  * 管理账号的限流状态、失败计数和智能退避
+ * 🔧 已升级：支持模型级别的限流粒度 (accountId:model)
  */
 class RateLimitTracker {
   constructor() {
-    /** @type {Map<string, {resetTime: number, reason: string, retryAfterSec: number}>} */
+    /** 
+     * @type {Map<string, {resetTime: number, reason: string, retryAfterSec: number, model: string|null}>} 
+     * Key 格式: accountId 或 accountId:model
+     */
     this.limits = new Map()
-    /** @type {Map<string, number>} 连续失败计数 */
+    /** @type {Map<string, number>} 连续失败计数，Key 格式同 limits */
     this.failureCounts = new Map()
     /** @type {Set<string>} 记录已尝试清理数据库限流状态的账号 */
     this.dbClearAttempted = new Set()
   }
 
   /**
+   * 生成限流存储的 key
+   * @private
+   * @param {string} accountId - 账号 ID
+   * @param {string|null} model - 模型名称（可选）
+   * @returns {string} 存储 key
+   */
+  _getLimitKey(accountId, model = null) {
+    return model ? `${accountId}:${model}` : accountId
+  }
+
+  /**
    * 标记账号请求成功，重置连续失败计数
+   * 🔧 已升级：支持模型级别的成功标记
    * 
    * 当账号成功完成请求后调用此方法，将其失败计数归零，
    * 这样下次失败时会从最短的锁定时间开始。
    * 参考 Rust 版 rate_limit.rs 的 mark_success 方法
    * 
    * @param {string} accountId - 账号 ID
+   * @param {string|null} model - 模型名称（可选，传入则只清除该模型的限流）
    */
-  markSuccess(accountId) {
-    const hadFailures = this.failureCounts.has(accountId)
-    const hadLimits = this.limits.has(accountId)
+  markSuccess(accountId, model = null) {
+    const limitKey = this._getLimitKey(accountId, model)
+    const hadFailures = this.failureCounts.has(limitKey)
+    const hadLimits = this.limits.has(limitKey)
     
-    // 清除失败计数
-    this.failureCounts.delete(accountId)
-    // 同时清除限流记录（如果有）
-    this.limits.delete(accountId)
+    // 清除失败计数和限流记录
+    this.failureCounts.delete(limitKey)
+    this.limits.delete(limitKey)
     
     if (hadFailures || hadLimits) {
-      logger.debug(`[RateLimitTracker] ✅ 账号 ${accountId} 请求成功，已重置失败计数和限流记录`)
+      logger.debug(`[RateLimitTracker] ✅ ${model ? `模型 ${model}` : '账号'} ${accountId} 请求成功，已重置失败计数和限流记录`)
     }
     
-    const shouldClearDb = hadFailures || hadLimits || !this.dbClearAttempted.has(accountId)
-    if (shouldClearDb) {
-      this.dbClearAttempted.add(accountId)
-      // 🔧 清除数据库限流状态（最佳努力，避免每次成功都写库）
-      this._clearFromDatabase(accountId)
+    // 只有账号级别的成功才尝试清除数据库（模型级别由 _persistToDatabase 管理）
+    if (!model) {
+      const shouldClearDb = hadFailures || hadLimits || !this.dbClearAttempted.has(accountId)
+      if (shouldClearDb) {
+        this.dbClearAttempted.add(accountId)
+        // 🔧 清除数据库限流状态（最佳努力，避免每次成功都写库）
+        this._clearFromDatabase(accountId, null)
+      }
+    } else {
+      // 模型成功时，清除该模型的数据库限流状态
+      this._clearFromDatabase(accountId, model)
     }
   }
 
@@ -147,12 +170,15 @@ class RateLimitTracker {
     }
 
     // 3. 应用默认值与指数退避逻辑
+    // 🔧 使用模型级别的 key
+    const limitKey = this._getLimitKey(accountId, model)
+    
     if (retryAfterSec === null) {
-      // 获取连续失败次数
-      const failureCount = (this.failureCounts.get(accountId) || 0) + 1
-      this.failureCounts.set(accountId, failureCount)
+      // 获取连续失败次数（使用模型级别的 key）
+      const failureCount = (this.failureCounts.get(limitKey) || 0) + 1
+      this.failureCounts.set(limitKey, failureCount)
       
-      logger.info(`[RateLimitTracker] 无明确重试时间，账号 ${accountId} 连续失败次数: ${failureCount}，应用指数退避`)
+      logger.info(`[RateLimitTracker] 无明确重试时间，${model ? `模型 ${model}` : '账号'} ${accountId} 连续失败次数: ${failureCount}，应用指数退避`)
 
       retryAfterSec = this._getDefaultRetryTime(reason, failureCount)
     } else {
@@ -163,9 +189,9 @@ class RateLimitTracker {
       }
     }
 
-    // 4. 存储限流信息
+    // 4. 存储限流信息（使用模型级别的 key）
     const resetTime = Date.now() + retryAfterSec * 1000
-    this.limits.set(accountId, {
+    this.limits.set(limitKey, {
       resetTime,
       reason,
       retryAfterSec,
@@ -173,15 +199,15 @@ class RateLimitTracker {
     })
 
     logger.warn(
-      `[RateLimitTracker] 账号 ${accountId} [${status}] 限流类型: ${reason}, 重置延时: ${retryAfterSec}秒`
+      `[RateLimitTracker] ${model ? `模型 ${model}` : '账号'} ${accountId} [${status}] 限流类型: ${reason}, 重置延时: ${retryAfterSec}秒`
     )
 
     // 5. 判断是否应该停止重试
     // QUOTA_EXHAUSTED 时停止重试，保护账号池
     const shouldStop = reason === RateLimitReason.QUOTA_EXHAUSTED
 
-    // 6. 🔧 持久化到数据库（异步，不阻塞返回）
-    this._persistToDatabase(accountId, reason, retryAfterSec)
+    // 6. 🔧 持久化到数据库（异步，不阻塞返回，包含模型信息）
+    this._persistToDatabase(accountId, reason, retryAfterSec, model)
 
     return { reason, retryAfterSec, shouldStop }
   }
@@ -395,7 +421,7 @@ class RateLimitTracker {
   }
 
   /**
-   * 检查账号是否仍在限流中
+   * 检查账号是否仍在限流中（账号级别，向后兼容）
    * @param {string} accountId
    * @returns {boolean}
    */
@@ -406,12 +432,40 @@ class RateLimitTracker {
   }
 
   /**
+   * 检查账号的特定模型是否在限流中
+   * 🔧 新增：支持模型级别的限流检查
+   * 
+   * @param {string} accountId - 账号 ID
+   * @param {string} model - 模型名称
+   * @returns {boolean} 是否限流中
+   */
+  isRateLimitedForModel(accountId, model) {
+    if (!model) {
+      return this.isRateLimited(accountId)
+    }
+    
+    // 优先检查精确的模型限流
+    const modelKey = this._getLimitKey(accountId, model)
+    const modelInfo = this.limits.get(modelKey)
+    if (modelInfo && modelInfo.resetTime > Date.now()) {
+      return true
+    }
+    
+    // 兜底检查账号级别限流（向后兼容）
+    const accountInfo = this.limits.get(accountId)
+    return accountInfo && accountInfo.resetTime > Date.now()
+  }
+
+  /**
    * 获取账号剩余等待时间 (秒)
+   * 🔧 已升级：支持模型级别
    * @param {string} accountId
+   * @param {string|null} model - 模型名称（可选）
    * @returns {number}
    */
-  getRemainingWait(accountId) {
-    const info = this.limits.get(accountId)
+  getRemainingWait(accountId, model = null) {
+    const limitKey = this._getLimitKey(accountId, model)
+    const info = this.limits.get(limitKey)
     if (!info) return 0
     const remaining = Math.ceil((info.resetTime - Date.now()) / 1000)
     return remaining > 0 ? remaining : 0
@@ -419,20 +473,52 @@ class RateLimitTracker {
 
   /**
    * 获取账号的限流信息
+   * 🔧 已升级：支持模型级别
    * @param {string} accountId
-   * @returns {{resetTime: number, reason: string, retryAfterSec: number}|null}
+   * @param {string|null} model - 模型名称（可选）
+   * @returns {{resetTime: number, reason: string, retryAfterSec: number, model: string|null}|null}
    */
-  getInfo(accountId) {
-    return this.limits.get(accountId) || null
+  getInfo(accountId, model = null) {
+    const limitKey = this._getLimitKey(accountId, model)
+    return this.limits.get(limitKey) || null
+  }
+
+  /**
+   * 获取账号所有模型的限流详情
+   * 🔧 新增：用于前端展示
+   * @param {string} accountId
+   * @returns {Object.<string, {resetTime: number, reason: string, retryAfterSec: number}>} 模型 -> 限流信息映射
+   */
+  getModelRateLimits(accountId) {
+    const result = {}
+    const now = Date.now()
+    const prefix = `${accountId}:`
+    
+    for (const [key, info] of this.limits.entries()) {
+      if (key.startsWith(prefix) && info.resetTime > now) {
+        const model = key.substring(prefix.length)
+        result[model] = {
+          reason: info.reason,
+          retryAfterSec: info.retryAfterSec,
+          resetTime: info.resetTime,
+          minutesRemaining: Math.ceil((info.resetTime - now) / 60000)
+        }
+      }
+    }
+    
+    return result
   }
 
   /**
    * 清除指定账号的限流记录
+   * 🔧 已升级：支持模型级别
    * @param {string} accountId
+   * @param {string|null} model - 模型名称（可选，不传则清除账号级别）
    * @returns {boolean}
    */
-  clear(accountId) {
-    return this.limits.delete(accountId)
+  clear(accountId, model = null) {
+    const limitKey = this._getLimitKey(accountId, model)
+    return this.limits.delete(limitKey)
   }
 
   /**
@@ -480,40 +566,70 @@ class RateLimitTracker {
    * 清除所有限流记录 (乐观重置策略)
    * 🔧 重要修改：排除 QUOTA_EXHAUSTED 类型的限流
    * 因为配额耗尽需要数小时恢复，乐观重置只会导致无效请求
+   * 🔧 已升级：正确处理模型级别的 key 格式 (accountId:model)
    */
   clearAll() {
     const now = Date.now()
     let clearedCount = 0
     let preservedQuotaCount = 0
-    const clearedAccountIds = []
+    const clearedKeys = []
     
-    for (const [accountId, info] of this.limits.entries()) {
+    for (const [limitKey, info] of this.limits.entries()) {
       // 🔧 关键修复：保留 QUOTA_EXHAUSTED 类型的限流记录
       if (info.reason === RateLimitReason.QUOTA_EXHAUSTED && info.resetTime > now) {
         preservedQuotaCount++
+        // 解析 key 中的 accountId（可能是 "accountId" 或 "accountId:model"）
+        const accountId = limitKey.includes(':') ? limitKey.split(':')[0] : limitKey
+        const model = limitKey.includes(':') ? limitKey.split(':').slice(1).join(':') : null
         logger.info(
-          `[RateLimitTracker] 🛡️ 保留配额耗尽账号 ${accountId}，剩余 ${Math.ceil((info.resetTime - now) / 1000)}秒恢复`
+          `[RateLimitTracker] 🛡️ 保留配额耗尽 ${model ? `模型 ${model}` : '账号'} ${accountId}，剩余 ${Math.ceil((info.resetTime - now) / 1000)}秒恢复`
         )
         continue
       }
       
       // 清除非 QUOTA_EXHAUSTED 的记录
-      this.limits.delete(accountId)
-      this.failureCounts.delete(accountId)
-      clearedAccountIds.push(accountId)
+      this.limits.delete(limitKey)
+      this.failureCounts.delete(limitKey)
+      clearedKeys.push(limitKey)
       clearedCount++
     }
     
     if (clearedCount > 0 || preservedQuotaCount > 0) {
       logger.warn(
         `[RateLimitTracker] 🔄 乐观重置: 清除了 ${clearedCount} 个限流记录，` +
-        `保留了 ${preservedQuotaCount} 个配额耗尽账号`
+        `保留了 ${preservedQuotaCount} 个配额耗尽记录`
       )
     }
     
-    // 🔧 只清除被移除账号的数据库状态
-    for (const accountId of clearedAccountIds) {
-      this._clearFromDatabase(accountId)
+    // 🔧 清除被移除记录对应的数据库状态
+    // 按 accountId 分组，避免重复清除
+    const accountsToClear = new Set()
+    const modelsToClear = new Map() // accountId -> Set<model>
+    
+    for (const limitKey of clearedKeys) {
+      if (limitKey.includes(':')) {
+        const parts = limitKey.split(':')
+        const accountId = parts[0]
+        const model = parts.slice(1).join(':')
+        if (!modelsToClear.has(accountId)) {
+          modelsToClear.set(accountId, new Set())
+        }
+        modelsToClear.get(accountId).add(model)
+      } else {
+        accountsToClear.add(limitKey)
+      }
+    }
+    
+    // 账号级别清除
+    for (const accountId of accountsToClear) {
+      this._clearFromDatabase(accountId, null)
+    }
+    
+    // 模型级别清除
+    for (const [accountId, models] of modelsToClear.entries()) {
+      for (const model of models) {
+        this._clearFromDatabase(accountId, model)
+      }
     }
     
     return { cleared: clearedCount, preserved: preservedQuotaCount }
@@ -562,10 +678,15 @@ class RateLimitTracker {
 
   /**
    * 持久化限流状态到数据库
+   * 🔧 已升级：支持模型级别的限流持久化
    * 异步执行，不影响主流程
    * @private
+   * @param {string} accountId - 账号 ID
+   * @param {string} reason - 限流原因
+   * @param {number} retryAfterSec - 重试等待秒数
+   * @param {string|null} model - 模型名称（可选）
    */
-  _persistToDatabase(accountId, reason, retryAfterSec) {
+  _persistToDatabase(accountId, reason, retryAfterSec, model = null) {
     // 延迟加载避免循环依赖
     const geminiAccountService = require('../geminiAccountService')
     
@@ -573,9 +694,10 @@ class RateLimitTracker {
     geminiAccountService.setAccountRateLimitedWithDetails(accountId, {
       reason,
       retryAfterSec,
-      rateLimitEndAt: new Date(Date.now() + retryAfterSec * 1000).toISOString()
+      rateLimitEndAt: new Date(Date.now() + retryAfterSec * 1000).toISOString(),
+      model  // 🔧 新增：模型信息
     }).then(() => {
-      logger.debug(`[RateLimitTracker] 📊 限流状态已持久化到数据库: ${accountId}`)
+      logger.debug(`[RateLimitTracker] 📊 限流状态已持久化到数据库: ${accountId}${model ? `:${model}` : ''}`)
     }).catch(err => {
       logger.warn(`[RateLimitTracker] 持久化限流状态失败: ${err.message}`)
     })
@@ -583,16 +705,19 @@ class RateLimitTracker {
 
   /**
    * 清除数据库中的限流状态
+   * 🔧 已升级：支持模型级别的限流清除
    * 异步执行，不影响主流程
    * @private
+   * @param {string} accountId - 账号 ID
+   * @param {string|null} model - 模型名称（可选，传入则只清除该模型的限流）
    */
-  _clearFromDatabase(accountId) {
+  _clearFromDatabase(accountId, model = null) {
     // 延迟加载避免循环依赖
     const geminiAccountService = require('../geminiAccountService')
     
     // 异步执行，不阻塞返回
-    geminiAccountService.clearAccountRateLimit(accountId).then(() => {
-      logger.debug(`[RateLimitTracker] ✅ 数据库限流状态已清除: ${accountId}`)
+    geminiAccountService.clearAccountRateLimit(accountId, model).then(() => {
+      logger.debug(`[RateLimitTracker] ✅ 数据库限流状态已清除: ${accountId}${model ? `:${model}` : ''}`)
     }).catch(err => {
       logger.warn(`[RateLimitTracker] 清除数据库限流状态失败: ${err.message}`)
     })

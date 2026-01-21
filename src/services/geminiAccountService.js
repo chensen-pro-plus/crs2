@@ -876,20 +876,23 @@ async function getAllAccounts() {
         // 添加 hasRefreshToken 标记
         hasRefreshToken: !!accountData.refreshToken,
         // 添加限流状态信息（统一格式）
+        // 🔧 已升级：包含模型级别的限流详情
         rateLimitStatus: rateLimitInfo
           ? {
               isRateLimited: rateLimitInfo.isRateLimited,
               rateLimitedAt: rateLimitInfo.rateLimitedAt,
               minutesRemaining: rateLimitInfo.minutesRemaining,
               rateLimitReason: rateLimitInfo.rateLimitReason || null,
-              rateLimitEndAt: rateLimitInfo.rateLimitEndAt || null
+              rateLimitEndAt: rateLimitInfo.rateLimitEndAt || null,
+              modelRateLimits: rateLimitInfo.modelRateLimits || {} // 🔧 新增：模型级别限流
             }
           : {
               isRateLimited: false,
               rateLimitedAt: null,
               minutesRemaining: 0,
               rateLimitReason: null,
-              rateLimitEndAt: null
+              rateLimitEndAt: null,
+              modelRateLimits: {} // 🔧 新增：模型级别限流
             }
       })
     }
@@ -1208,6 +1211,7 @@ async function setAccountRateLimited(accountId, isLimited = true) {
 
 /**
  * 设置账户限流状态（带详细信息）
+ * 🔧 已升级：支持模型级别的限流持久化
  * 用于 /antigravity-enhanced/api 的智能限流持久化
  *
  * @param {string} accountId - 账户 ID
@@ -1215,10 +1219,63 @@ async function setAccountRateLimited(accountId, isLimited = true) {
  * @param {string} details.reason - 限流原因 (QUOTA_EXHAUSTED, RATE_LIMIT_EXCEEDED, MODEL_CAPACITY_EXHAUSTED, SERVER_ERROR)
  * @param {number} details.retryAfterSec - 重试等待秒数
  * @param {string} details.rateLimitEndAt - 限流结束时间 ISO 字符串
+ * @param {string|null} details.model - 模型名称（可选，传入则存储为模型级别限流）
  */
 async function setAccountRateLimitedWithDetails(accountId, details = {}) {
-  const { reason, retryAfterSec, rateLimitEndAt } = details
+  const { reason, retryAfterSec, rateLimitEndAt, model } = details
+  const endAt = rateLimitEndAt || new Date(Date.now() + (retryAfterSec || 60) * 1000).toISOString()
 
+  // 🔧 模型级别限流：存储到 rateLimitDetails JSON 字段
+  if (model) {
+    const client = redisClient.getClientSafe()
+    const accountKey = `${GEMINI_ACCOUNT_KEY_PREFIX}${accountId}`
+
+    // 获取现有的 rateLimitDetails
+    let rateLimitDetails = {}
+    const existingDetails = await client.hget(accountKey, 'rateLimitDetails')
+    if (existingDetails) {
+      try {
+        rateLimitDetails = JSON.parse(existingDetails)
+      } catch (e) {
+        rateLimitDetails = {}
+      }
+    }
+
+    // 添加/更新当前模型的限流信息
+    rateLimitDetails[model] = {
+      reason: reason || 'UNKNOWN',
+      retryAfterSec: retryAfterSec || 60,
+      rateLimitEndAt: endAt,
+      rateLimitedAt: new Date().toISOString()
+    }
+
+    // 清理已过期的模型限流
+    const now = new Date()
+    for (const [m, info] of Object.entries(rateLimitDetails)) {
+      if (info.rateLimitEndAt && new Date(info.rateLimitEndAt) <= now) {
+        delete rateLimitDetails[m]
+      }
+    }
+
+    // 更新数据库
+    const updates = {
+      rateLimitDetails: JSON.stringify(rateLimitDetails)
+    }
+
+    // 如果有任何模型限流，设置账号级别状态为 limited
+    if (Object.keys(rateLimitDetails).length > 0) {
+      updates.rateLimitStatus = 'limited'
+      updates.rateLimitedAt = new Date().toISOString()
+    }
+
+    logger.info(
+      `[GeminiAccountService] 📊 设置账户 ${accountId} 模型 ${model} 限流状态: reason=${reason}, retryAfterSec=${retryAfterSec}`
+    )
+    await updateAccount(accountId, updates)
+    return
+  }
+
+  // 账号级别限流（向后兼容）
   const updates = {
     rateLimitStatus: 'limited',
     rateLimitedAt: new Date().toISOString(),
@@ -1227,8 +1284,7 @@ async function setAccountRateLimitedWithDetails(accountId, details = {}) {
     // 新增字段：重试等待秒数
     rateLimitRetryAfterSec: String(retryAfterSec || 60),
     // 新增字段：限流结束时间（精确）
-    rateLimitEndAt:
-      rateLimitEndAt || new Date(Date.now() + (retryAfterSec || 60) * 1000).toISOString()
+    rateLimitEndAt: endAt
   }
 
   logger.info(
@@ -1239,17 +1295,56 @@ async function setAccountRateLimitedWithDetails(accountId, details = {}) {
 
 /**
  * 清除账户限流状态（从数据库）
+ * 🔧 已升级：支持模型级别的限流清除
  * 用于 /antigravity-enhanced/api 请求成功后清除限流记录
  *
  * @param {string} accountId - 账户 ID
+ * @param {string|null} model - 模型名称（可选，传入则只清除该模型的限流）
  */
-async function clearAccountRateLimit(accountId) {
+async function clearAccountRateLimit(accountId, model = null) {
+  // 🔧 模型级别限流清除
+  if (model) {
+    const client = redisClient.getClientSafe()
+    const accountKey = `${GEMINI_ACCOUNT_KEY_PREFIX}${accountId}`
+
+    // 获取现有的 rateLimitDetails
+    let rateLimitDetails = {}
+    const existingDetails = await client.hget(accountKey, 'rateLimitDetails')
+    if (existingDetails) {
+      try {
+        rateLimitDetails = JSON.parse(existingDetails)
+      } catch (e) {
+        rateLimitDetails = {}
+      }
+    }
+
+    // 删除指定模型的限流
+    delete rateLimitDetails[model]
+
+    // 更新数据库
+    const updates = {
+      rateLimitDetails: JSON.stringify(rateLimitDetails)
+    }
+
+    // 如果没有任何模型限流了，清除账号级别状态
+    if (Object.keys(rateLimitDetails).length === 0) {
+      updates.rateLimitStatus = ''
+      updates.rateLimitedAt = ''
+    }
+
+    logger.debug(`[GeminiAccountService] ✅ 清除账户 ${accountId} 模型 ${model} 限流状态`)
+    await updateAccount(accountId, updates)
+    return
+  }
+
+  // 账号级别限流清除（向后兼容）
   const updates = {
     rateLimitStatus: '',
     rateLimitedAt: '',
     rateLimitReason: '',
     rateLimitRetryAfterSec: '',
-    rateLimitEndAt: ''
+    rateLimitEndAt: '',
+    rateLimitDetails: '' // 同时清除模型级别限流
   }
 
   logger.debug(`[GeminiAccountService] ✅ 清除账户 ${accountId} 限流状态`)
@@ -1258,19 +1353,45 @@ async function clearAccountRateLimit(accountId) {
 
 // 获取账户的限流信息（参考 claudeAccountService 的实现）
 // 🔧 已增强：支持 rateLimitEndAt 字段计算动态恢复时间
+// 🔧 已升级：返回模型级别的限流详情
 async function getAccountRateLimitInfo(accountId) {
   try {
-    const account = await getAccount(accountId)
-    if (!account) {
+    const client = redisClient.getClientSafe()
+    const accountKey = `${GEMINI_ACCOUNT_KEY_PREFIX}${accountId}`
+    const account = await client.hgetall(accountKey)
+
+    if (!account || Object.keys(account).length === 0) {
       return null
     }
 
+    const now = new Date()
+
+    // 🔧 解析模型级别限流详情
+    const modelRateLimits = {}
+    if (account.rateLimitDetails) {
+      try {
+        const details = JSON.parse(account.rateLimitDetails)
+        for (const [model, info] of Object.entries(details)) {
+          const endAt = new Date(info.rateLimitEndAt)
+          if (endAt > now) {
+            modelRateLimits[model] = {
+              reason: info.reason,
+              retryAfterSec: info.retryAfterSec,
+              rateLimitEndAt: info.rateLimitEndAt,
+              minutesRemaining: Math.ceil((endAt.getTime() - now.getTime()) / 60000)
+            }
+          }
+        }
+      } catch (e) {
+        // JSON 解析失败，忽略
+      }
+    }
+
+    // 账号级别限流检查
     if (
       account.rateLimitStatus === 'limited' &&
       (account.rateLimitedAt || account.rateLimitEndAt)
     ) {
-      const now = new Date()
-
       // 优先使用 rateLimitEndAt（精确恢复时间），否则回退到固定1小时
       let endAt = null
       if (account.rateLimitEndAt) {
@@ -1295,11 +1416,12 @@ async function getAccountRateLimitInfo(accountId) {
         })
 
         return {
-          isRateLimited: false,
+          isRateLimited: Object.keys(modelRateLimits).length > 0,
           rateLimitedAt: null,
           rateLimitReason: null,
           minutesRemaining: 0,
-          rateLimitEndAt: null
+          rateLimitEndAt: null,
+          modelRateLimits
         }
       }
 
@@ -1316,11 +1438,12 @@ async function getAccountRateLimitInfo(accountId) {
         })
 
         return {
-          isRateLimited: false,
+          isRateLimited: Object.keys(modelRateLimits).length > 0,
           rateLimitedAt: null,
           rateLimitReason: null,
           minutesRemaining: 0,
-          rateLimitEndAt: null
+          rateLimitEndAt: null,
+          modelRateLimits
         }
       }
 
@@ -1329,16 +1452,18 @@ async function getAccountRateLimitInfo(accountId) {
         rateLimitedAt: account.rateLimitedAt,
         rateLimitReason: account.rateLimitReason || 'UNKNOWN',
         minutesRemaining,
-        rateLimitEndAt: endAt.toISOString()
+        rateLimitEndAt: endAt.toISOString(),
+        modelRateLimits
       }
     }
 
     return {
-      isRateLimited: false,
+      isRateLimited: Object.keys(modelRateLimits).length > 0,
       rateLimitedAt: null,
       rateLimitReason: null,
       minutesRemaining: 0,
-      rateLimitEndAt: null
+      rateLimitEndAt: null,
+      modelRateLimits
     }
   } catch (error) {
     logger.error(`❌ Failed to get rate limit info for Gemini account: ${accountId}`, error)

@@ -446,9 +446,9 @@ async function handleMessages(req, res) {
         
         // ✅ 请求成功，重置该账号的失败计数
         logger.debug(
-          `[AntigravityEnhanced][${traceId}] ✅ 请求成功，调用 markSuccess 重置账号 ${accountInfo.accountId} 的失败计数`
+          `[AntigravityEnhanced][${traceId}] ✅ 请求成功，调用 markSuccess 重置账号 ${accountInfo.accountId} 模型 ${effectiveModel} 的失败计数`
         )
-        rateLimitTracker.markSuccess(accountInfo.accountId)
+        rateLimitTracker.markSuccess(accountInfo.accountId, effectiveModel)
         
         return { response, account }
       } catch (httpError) {
