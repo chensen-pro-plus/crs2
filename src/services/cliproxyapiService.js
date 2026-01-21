@@ -272,9 +272,24 @@ async function proxyRequest(req, res, apiKeyData = null) {
   const protocol = targetUrl.protocol === 'https:' ? https : http
   const agent = targetUrl.protocol === 'https:' ? httpsAgent : httpAgent
 
-  // 准备请求体
+  // 准备请求体，并进行模型名称映射
   let body = null
+  let originalModel = null
+  let mappedModel = null
+
   if (req.body && Object.keys(req.body).length > 0) {
+    // 🔄 模型名称映射：将用户请求的模型名替换为配置的目标模型名
+    if (req.body.model) {
+      originalModel = req.body.model
+      mappedModel = cliproxyapiConfig.getTargetModel(originalModel)
+
+      // 如果发生了映射，替换请求体中的模型名
+      if (mappedModel !== originalModel) {
+        logger.info(`[CLIProxyAPI] 🔄 模型映射: "${originalModel}" -> "${mappedModel}"`)
+        req.body.model = mappedModel
+      }
+    }
+
     body = JSON.stringify(req.body)
   }
 
