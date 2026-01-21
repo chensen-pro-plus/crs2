@@ -324,8 +324,8 @@ class Application {
       // 将请求透明转发到本地 CLIProxyAPI 服务（端口 8317）
       // 支持 OpenAI/Gemini/Claude/Codex 等多种 API 格式
       const cliproxyapiRoutes = require('./routes/cliproxyapiRoutes')
-      this.app.use('/cliproxy/api', cliproxyapiRoutes)
-      logger.info('🔀 CLIProxyAPI 转发路由已注册: /cliproxy/api/')
+      this.app.use('/claudeMax/v1', cliproxyapiRoutes)
+      logger.info('🔀 CLIProxyAPI 转发路由已注册: /claudeMax/v1/')
 
       // 🏠 根路径重定向到新版管理界面
       this.app.get('/', (req, res) => {
