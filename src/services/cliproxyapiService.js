@@ -261,8 +261,8 @@ async function proxyRequest(req, res, apiKeyData = null) {
 
   // 🔄 处理 URL 路径中的模型名映射（支持 Gemini API 格式：/v1beta/models/{model}:action）
   // 例如：/v1beta/models/gemini-3-pro-high:streamGenerateContent -> /v1beta/models/gemini-3-pro-preview:streamGenerateContent
-  // 支持多种路由前缀：/cliproxy/api 和 /claudeMax/v1
-  let modifiedPath = req.originalUrl.replace(/^\/cliproxy\/api|^\/claudeMax\/v1/, '')
+  // 支持多种路由前缀：/cliproxy/api、/claudeMax/v1 和 /claudeMax
+  let modifiedPath = req.originalUrl.replace(/^\/cliproxy\/api|^\/claudeMax\/v1|^\/claudeMax/, '')
   // 用于存储 URL 中解析的模型名
   let urlOriginalModel = null
   let urlMappedModel = null
