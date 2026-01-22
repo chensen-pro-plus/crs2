@@ -40,6 +40,95 @@ function hasClaudeMaxPermission(apiKeyData) {
 }
 
 /**
+ * 从请求中提取模型名称
+ * 支持：
+ * - req.body.model (Claude/OpenAI 格式)
+ * - URL 路径中的模型名 (Gemini 格式: /v1beta/models/gemini-xxx:generateContent)
+ * @param {Object} req - Express 请求对象
+ * @returns {string|undefined} - 模型名称
+ */
+function extractModelName(req) {
+  // 优先从请求体获取
+  if (req.body?.model) {
+    return req.body.model
+  }
+
+  // 尝试从 URL 路径中提取 Gemini 格式的模型名
+  // 匹配: /models/gemini-xxx:generateContent 或 /models/gemini-xxx:streamGenerateContent
+  const urlPath = req.originalUrl || req.url || ''
+  const geminiMatch = urlPath.match(/\/models\/([^/:]+)(?::|$)/)
+  if (geminiMatch && geminiMatch[1]) {
+    return geminiMatch[1]
+  }
+
+  return undefined
+}
+
+/**
+ * 检查模型是否被 ClaudeMax 模型过滤器允许
+ * @param {Object} apiKeyData - API Key 数据（需包含 claudeMaxModelFilters 字段）
+ * @param {string} modelName - 请求的模型名称
+ * @returns {boolean} - 是否允许
+ */
+function isClaudeMaxModelAllowed(apiKeyData, modelName) {
+  let filters = apiKeyData?.claudeMaxModelFilters
+
+  // 如果是字符串，尝试解析 JSON
+  if (typeof filters === 'string') {
+    try {
+      filters = JSON.parse(filters)
+    } catch (e) {
+      filters = []
+    }
+  }
+
+  logger.info(
+    `[DEBUG] isClaudeMaxModelAllowed: filters=${JSON.stringify(filters)}, model=${modelName}, isArray=${Array.isArray(filters)}`
+  )
+
+  // 空数组或未定义 = 通用，允许所有
+  if (!filters || !Array.isArray(filters) || filters.length === 0) {
+    return true
+  }
+
+  // 没有模型名称时，默认允许（让后续逻辑处理）
+  if (!modelName) {
+    return true
+  }
+
+  const modelLower = modelName.toLowerCase()
+  const allowed = filters.some((f) => modelLower.includes(f.toLowerCase()))
+  logger.info(`[DEBUG] isClaudeMaxModelAllowed: result=${allowed}`)
+  return allowed
+}
+
+/**
+ * 构建模型过滤错误响应
+ */
+function buildModelFilterError(modelName, filters) {
+  // 生成允许的模型类型描述
+  const allowedTypes = (filters || [])
+    .map((f) => {
+      if (f.toLowerCase() === 'claude') {
+        return 'Claude 系列模型'
+      }
+      if (f.toLowerCase() === 'gemini') {
+        return 'Gemini 系列模型'
+      }
+      return f
+    })
+    .join('、')
+
+  return {
+    type: 'error',
+    error: {
+      type: 'model_not_allowed',
+      message: `模型访问被拒绝：您请求的模型 "${modelName}" 不在此 API Key 的允许范围内。当前 API Key 仅允许访问：${allowedTypes}。请联系管理员调整模型过滤设置，或使用符合过滤条件的模型。`
+    }
+  }
+}
+
+/**
  * GET /
  *
  * 根路径，返回服务信息
@@ -134,6 +223,17 @@ router.post('/v1/messages', authenticateApiKey, async (req, res) => {
       })
     }
 
+    // 模型过滤检查（支持从 URL 或请求体提取模型名）
+    const requestModel = extractModelName(req)
+    if (!isClaudeMaxModelAllowed(apiKeyData, requestModel)) {
+      logger.security(
+        `🚫 API Key ${apiKeyData?.id || 'unknown'} 模型 "${requestModel}" 不在允许列表，拒绝访问`
+      )
+      return res
+        .status(403)
+        .json(buildModelFilterError(requestModel, apiKeyData.claudeMaxModelFilters))
+    }
+
     logger.info('[CLIProxyAPI] 接收 Claude 消息请求', {
       model: req.body?.model,
       stream: req.body?.stream,
@@ -175,6 +275,17 @@ router.post('/v1/chat/completions', authenticateApiKey, async (req, res) => {
           type: 'permission_denied',
           message: '此 API Key 未启用 claudeMax 权限'
         }
+      })
+    }
+
+    // 模型过滤检查（支持从 URL 或请求体提取模型名）
+    const requestModel = extractModelName(req)
+    if (!isClaudeMaxModelAllowed(apiKeyData, requestModel)) {
+      logger.security(
+        `🚫 API Key ${apiKeyData?.id || 'unknown'} 模型 "${requestModel}" 不在允许列表，拒绝访问`
+      )
+      return res.status(403).json({
+        error: buildModelFilterError(requestModel, apiKeyData.claudeMaxModelFilters).error
       })
     }
 
@@ -239,6 +350,17 @@ router.all('*', authenticateApiKey, async (req, res) => {
           type: 'permission_denied',
           message: '此 API Key 未启用 claudeMax 权限'
         }
+      })
+    }
+
+    // 模型过滤检查（支持从 URL 或请求体提取模型名）
+    const requestModel = extractModelName(req)
+    if (!isClaudeMaxModelAllowed(apiKeyData, requestModel)) {
+      logger.security(
+        `🚫 API Key ${apiKeyData?.id || 'unknown'} 模型 "${requestModel}" 不在允许列表，拒绝访问`
+      )
+      return res.status(403).json({
+        error: buildModelFilterError(requestModel, apiKeyData.claudeMaxModelFilters).error
       })
     }
 

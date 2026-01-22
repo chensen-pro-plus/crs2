@@ -122,6 +122,9 @@ class ApiKeyService {
 
   // 🔑 生成新的API Key
   async generateApiKey(options = {}) {
+    logger.info(
+      `[DEBUG] generateApiKey 收到 options.claudeMaxModelFilters: ${JSON.stringify(options.claudeMaxModelFilters)}, isArray: ${Array.isArray(options.claudeMaxModelFilters)}`
+    )
     const {
       name = 'Unnamed Key',
       description = '',
@@ -151,7 +154,8 @@ class ApiKeyService {
       activationDays = 0, // 新增：激活后有效天数（0表示不使用此功能）
       activationUnit = 'days', // 新增：激活时间单位 'hours' 或 'days'
       expirationMode = 'fixed', // 新增：过期模式 'fixed'(固定时间) 或 'activation'(首次使用后激活)
-      icon = '' // 新增：图标（base64编码）
+      icon = '', // 新增：图标（base64编码）
+      claudeMaxModelFilters = [] // 新增：ClaudeMax 模型过滤器（空数组表示通用，['claude', 'gemini'] 等表示只响应包含这些关键字的模型）
     } = options
 
     // 生成简单的API Key (64字符十六进制)
@@ -197,8 +201,13 @@ class ApiKeyService {
       createdBy: options.createdBy || 'admin',
       userId: options.userId || '',
       userUsername: options.userUsername || '',
-      icon: icon || '' // 新增：图标（base64编码）
+      icon: icon || '', // 新增：图标（base64编码）
+      claudeMaxModelFilters: JSON.stringify(claudeMaxModelFilters || []) // 新增：ClaudeMax 模型过滤器
     }
+
+    logger.info(
+      `[DEBUG] generateApiKey - keyData.claudeMaxModelFilters: ${keyData.claudeMaxModelFilters}`
+    )
 
     // 保存API Key数据并建立哈希映射
     await redis.setApiKey(keyId, keyData, hashedKey)
@@ -368,6 +377,16 @@ class ApiKeyService {
         tags = []
       }
 
+      // 解析 ClaudeMax 模型过滤器
+      let claudeMaxModelFilters = []
+      try {
+        claudeMaxModelFilters = keyData.claudeMaxModelFilters
+          ? JSON.parse(keyData.claudeMaxModelFilters)
+          : []
+      } catch (e) {
+        claudeMaxModelFilters = []
+      }
+
       return {
         valid: true,
         keyData: {
@@ -400,7 +419,8 @@ class ApiKeyService {
           totalCost,
           weeklyOpusCost: (await redis.getWeeklyOpusCost(keyData.id)) || 0,
           tags,
-          usage
+          usage,
+          claudeMaxModelFilters
         }
       }
     } catch (error) {
@@ -646,6 +666,18 @@ class ApiKeyService {
         } catch (e) {
           key.tags = []
         }
+        try {
+          const rawFilters = key.claudeMaxModelFilters
+          key.claudeMaxModelFilters = key.claudeMaxModelFilters
+            ? JSON.parse(key.claudeMaxModelFilters)
+            : []
+          logger.info(
+            `[DEBUG] getAllApiKeys - key ${key.id} claudeMaxModelFilters: raw=${rawFilters}, parsed=`,
+            key.claudeMaxModelFilters
+          )
+        } catch (e) {
+          key.claudeMaxModelFilters = []
+        }
         // 不暴露已弃用字段
         if (Object.prototype.hasOwnProperty.call(key, 'ccrAccountId')) {
           delete key.ccrAccountId
@@ -742,6 +774,7 @@ class ApiKeyService {
         'totalCostLimit',
         'weeklyOpusCostLimit',
         'tags',
+        'claudeMaxModelFilters', // 新增：ClaudeMax 模型过滤器
         'userId', // 新增：用户ID（所有者变更）
         'userUsername', // 新增：用户名（所有者变更）
         'createdBy' // 新增：创建者（所有者变更）
@@ -750,7 +783,12 @@ class ApiKeyService {
 
       for (const [field, value] of Object.entries(updates)) {
         if (allowedUpdates.includes(field)) {
-          if (field === 'restrictedModels' || field === 'allowedClients' || field === 'tags') {
+          if (
+            field === 'restrictedModels' ||
+            field === 'allowedClients' ||
+            field === 'tags' ||
+            field === 'claudeMaxModelFilters'
+          ) {
             // 特殊处理数组字段
             updatedData[field] = JSON.stringify(value || [])
           } else if (

@@ -626,6 +626,38 @@
                 <span class="text-sm text-gray-700 dark:text-gray-300">ClaudeMax</span>
               </label>
             </div>
+            <!-- ClaudeMax 模型过滤子选项 -->
+            <div
+              v-if="form.permissions.includes('claudeMax')"
+              class="mt-2 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-600 dark:bg-gray-700/50"
+            >
+              <p class="mb-2 text-xs font-medium text-gray-600 dark:text-gray-400">
+                ClaudeMax 模型过滤 (可选)
+              </p>
+              <div class="flex flex-wrap gap-3">
+                <label class="flex cursor-pointer items-center">
+                  <input
+                    v-model="form.claudeMaxModelFilters"
+                    class="mr-1.5 rounded text-blue-600 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700"
+                    type="checkbox"
+                    value="claude"
+                  />
+                  <span class="text-sm text-gray-700 dark:text-gray-300">Claude</span>
+                </label>
+                <label class="flex cursor-pointer items-center">
+                  <input
+                    v-model="form.claudeMaxModelFilters"
+                    class="mr-1.5 rounded text-blue-600 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700"
+                    type="checkbox"
+                    value="gemini"
+                  />
+                  <span class="text-sm text-gray-700 dark:text-gray-300">Gemini</span>
+                </label>
+              </div>
+              <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                不选任何选项表示通用（响应所有模型）
+              </p>
+            </div>
             <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
               不选择任何服务表示允许访问全部服务
             </p>
@@ -977,7 +1009,8 @@ const form = reactive({
   modelInput: '',
   enableClientRestriction: false,
   allowedClients: [],
-  tags: []
+  tags: [],
+  claudeMaxModelFilters: [] // ClaudeMax 模型过滤器
 })
 
 // 加载支持的客户端和已存在的标签
@@ -1389,6 +1422,10 @@ const createApiKey = async () => {
       activationUnit: form.expirationMode === 'activation' ? form.activationUnit : undefined,
       permissions: form.permissions,
       tags: form.tags.length > 0 ? form.tags : undefined,
+      claudeMaxModelFilters:
+        form.permissions.includes('claudeMax') && form.claudeMaxModelFilters.length > 0
+          ? form.claudeMaxModelFilters
+          : undefined,
       enableModelRestriction: form.enableModelRestriction,
       restrictedModels: form.restrictedModels,
       enableClientRestriction: form.enableClientRestriction,

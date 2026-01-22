@@ -459,6 +459,38 @@
                 <span class="text-sm text-gray-700 dark:text-gray-300">ClaudeMax</span>
               </label>
             </div>
+            <!-- ClaudeMax 模型过滤子选项 -->
+            <div
+              v-if="form.permissions.includes('claudeMax')"
+              class="mt-2 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-600 dark:bg-gray-700/50"
+            >
+              <p class="mb-2 text-xs font-medium text-gray-600 dark:text-gray-400">
+                ClaudeMax 模型过滤 (可选)
+              </p>
+              <div class="flex flex-wrap gap-3">
+                <label class="flex cursor-pointer items-center">
+                  <input
+                    v-model="form.claudeMaxModelFilters"
+                    class="mr-1.5 rounded text-blue-600 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700"
+                    type="checkbox"
+                    value="claude"
+                  />
+                  <span class="text-sm text-gray-700 dark:text-gray-300">Claude</span>
+                </label>
+                <label class="flex cursor-pointer items-center">
+                  <input
+                    v-model="form.claudeMaxModelFilters"
+                    class="mr-1.5 rounded text-blue-600 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700"
+                    type="checkbox"
+                    value="gemini"
+                  />
+                  <span class="text-sm text-gray-700 dark:text-gray-300">Gemini</span>
+                </label>
+              </div>
+              <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                不选任何选项表示通用（响应所有模型）
+              </p>
+            </div>
             <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
               不选择任何服务表示允许访问全部服务
             </p>
@@ -812,6 +844,7 @@ const form = reactive({
   enableClientRestriction: false,
   allowedClients: [],
   tags: [],
+  claudeMaxModelFilters: [], // ClaudeMax 模型过滤器
   isActive: true,
   ownerId: '' // 新增：所有者ID
 })
@@ -922,7 +955,10 @@ const updateApiKey = async () => {
           ? parseFloat(form.weeklyOpusCostLimit)
           : 0,
       permissions: form.permissions,
-      tags: form.tags
+      tags: form.tags,
+      claudeMaxModelFilters: form.permissions.includes('claudeMax')
+        ? form.claudeMaxModelFilters
+        : []
     }
 
     // 处理Claude账户绑定（区分OAuth和Console）
@@ -1283,6 +1319,18 @@ onMounted(async () => {
   form.restrictedModels = props.apiKey.restrictedModels || []
   form.allowedClients = props.apiKey.allowedClients || []
   form.tags = props.apiKey.tags || []
+  // ClaudeMax 模型过滤器需要确保是数组类型（后端可能返回字符串）
+  let filters = props.apiKey.claudeMaxModelFilters
+  // 如果是字符串，尝试解析 JSON
+  if (typeof filters === 'string') {
+    try {
+      filters = JSON.parse(filters)
+    } catch (e) {
+      filters = []
+    }
+  }
+  form.claudeMaxModelFilters = Array.isArray(filters) ? [...filters] : []
+  console.log('[DEBUG] EditApiKeyModal form.claudeMaxModelFilters:', form.claudeMaxModelFilters)
   // 从后端数据中获取实际的启用状态，强制转换为布尔值（Redis返回的是字符串）
   form.enableModelRestriction =
     props.apiKey.enableModelRestriction === true || props.apiKey.enableModelRestriction === 'true'

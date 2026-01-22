@@ -11,6 +11,36 @@ const router = express.Router()
 // 有效的权限值列表
 const VALID_PERMISSIONS = ['claude', 'gemini', 'openai', 'droid', 'claudeMax']
 
+// 有效的 ClaudeMax 模型过滤器值
+const VALID_CLAUDEMAX_FILTERS = ['claude', 'gemini']
+
+/**
+ * 验证 ClaudeMax 模型过滤器数组格式
+ * @param {any} filters - 过滤器值（可以是数组或其他）
+ * @returns {string|null} - 返回错误消息，null 表示验证通过
+ */
+function validateClaudeMaxModelFilters(filters) {
+  // 空值或未定义表示通用（不过滤）
+  if (filters === undefined || filters === null || filters === '') {
+    return null
+  }
+  // 必须是数组
+  if (!Array.isArray(filters)) {
+    return `ClaudeMax model filters must be an array. Valid values are: ${VALID_CLAUDEMAX_FILTERS.join(', ')}`
+  }
+  // 空数组表示通用（不过滤）
+  if (filters.length === 0) {
+    return null
+  }
+  // 验证数组中的每个值
+  for (const filter of filters) {
+    if (!VALID_CLAUDEMAX_FILTERS.includes(filter)) {
+      return `Invalid ClaudeMax model filter "${filter}". Valid values are: ${VALID_CLAUDEMAX_FILTERS.join(', ')}`
+    }
+  }
+  return null
+}
+
 /**
  * 验证权限数组格式
  * @param {any} permissions - 权限值（可以是数组或其他）
@@ -1298,7 +1328,8 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       activationDays, // 新增：激活后有效天数
       activationUnit, // 新增：激活时间单位 (hours/days)
       expirationMode, // 新增：过期模式
-      icon // 新增：图标
+      icon, // 新增：图标
+      claudeMaxModelFilters // 新增：ClaudeMax 模型过滤器
     } = req.body
 
     // 输入验证
@@ -1425,6 +1456,17 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       return res.status(400).json({ error: permissionsError })
     }
 
+    // 验证 ClaudeMax 模型过滤器
+    logger.info(`[DEBUG] POST /api-keys - claudeMaxModelFilters 收到:`, {
+      claudeMaxModelFilters,
+      type: typeof claudeMaxModelFilters,
+      isArray: Array.isArray(claudeMaxModelFilters)
+    })
+    const claudeMaxFiltersError = validateClaudeMaxModelFilters(claudeMaxModelFilters)
+    if (claudeMaxFiltersError) {
+      return res.status(400).json({ error: claudeMaxFiltersError })
+    }
+
     const newKey = await apiKeyService.generateApiKey({
       name,
       description,
@@ -1452,7 +1494,8 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       activationDays,
       activationUnit,
       expirationMode,
-      icon
+      icon,
+      claudeMaxModelFilters
     })
 
     logger.success(`🔑 Admin created new API key: ${name}`)
@@ -1811,7 +1854,8 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
       totalCostLimit,
       weeklyOpusCostLimit,
       tags,
-      ownerId // 新增：所有者ID字段
+      ownerId, // 新增：所有者ID字段
+      claudeMaxModelFilters // 新增：ClaudeMax 模型过滤器
     } = req.body
 
     // 只允许更新指定字段
@@ -1995,6 +2039,21 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
         return res.status(400).json({ error: 'All tags must be non-empty strings' })
       }
       updates.tags = tags
+    }
+
+    // 处理 ClaudeMax 模型过滤器
+    logger.info(`[DEBUG] PUT /api-keys/:id - claudeMaxModelFilters 收到:`, {
+      claudeMaxModelFilters,
+      type: typeof claudeMaxModelFilters,
+      isArray: Array.isArray(claudeMaxModelFilters)
+    })
+    if (claudeMaxModelFilters !== undefined) {
+      const filtersError = validateClaudeMaxModelFilters(claudeMaxModelFilters)
+      if (filtersError) {
+        return res.status(400).json({ error: filtersError })
+      }
+      updates.claudeMaxModelFilters = claudeMaxModelFilters
+      logger.info(`[DEBUG] PUT /api-keys/:id - claudeMaxModelFilters 已添加到 updates`)
     }
 
     // 处理活跃/禁用状态状态, 放在过期处理后，以确保后续增加禁用key功能

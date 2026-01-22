@@ -1307,7 +1307,8 @@ const authenticateApiKey = async (req, res, next) => {
       dailyCost: validation.keyData.dailyCost,
       totalCostLimit: validation.keyData.totalCostLimit,
       totalCost: validation.keyData.totalCost,
-      usage: validation.keyData.usage
+      usage: validation.keyData.usage,
+      claudeMaxModelFilters: validation.keyData.claudeMaxModelFilters // 新增：ClaudeMax 模型过滤器
     }
     req.usage = validation.keyData.usage
 
