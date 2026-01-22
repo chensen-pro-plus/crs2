@@ -9,7 +9,7 @@ const config = require('../../../config/config')
 const router = express.Router()
 
 // 有效的权限值列表
-const VALID_PERMISSIONS = ['claude', 'gemini', 'openai', 'droid']
+const VALID_PERMISSIONS = ['claude', 'gemini', 'openai', 'droid', 'claudeMax']
 
 /**
  * 验证权限数组格式

@@ -14,6 +14,7 @@ const logger = require('../utils/logger')
 const cliproxyapiService = require('../services/cliproxyapiService')
 const cliproxyapiConfig = require('../../config/cliproxyapi')
 const { authenticateApiKey } = require('../middleware/auth')
+const apiKeyService = require('../services/apiKeyService')
 
 /**
  * 中间件：检查服务是否启用
@@ -24,12 +25,19 @@ router.use((req, res, next) => {
     return res.status(503).json({
       error: {
         type: 'service_disabled',
-        message: 'CLIProxyAPI 转发服务已禁用'
+        message: 'ClaudeMax 转发服务已禁用'
       }
     })
   }
   next()
 })
+
+/**
+ * 检查 API Key 是否有 claudeMax 权限
+ */
+function hasClaudeMaxPermission(apiKeyData) {
+  return apiKeyService.hasPermission(apiKeyData?.permissions, 'claudeMax')
+}
 
 /**
  * GET /
@@ -111,6 +119,21 @@ router.post(['/api/event_logging/batch', '/event_logging/batch'], (req, res) => 
 router.post('/v1/messages', authenticateApiKey, async (req, res) => {
   try {
     const apiKeyData = req.apiKey // 从认证中间件获取
+
+    // 权限检查
+    if (!hasClaudeMaxPermission(apiKeyData)) {
+      logger.security(
+        `🚫 API Key ${apiKeyData?.id || 'unknown'} 缺少 claudeMax 权限，拒绝访问 ${req.originalUrl}`
+      )
+      return res.status(403).json({
+        type: 'error',
+        error: {
+          type: 'permission_denied',
+          message: '此 API Key 未启用 claudeMax 权限'
+        }
+      })
+    }
+
     logger.info('[CLIProxyAPI] 接收 Claude 消息请求', {
       model: req.body?.model,
       stream: req.body?.stream,
@@ -141,6 +164,20 @@ router.post('/v1/messages', authenticateApiKey, async (req, res) => {
 router.post('/v1/chat/completions', authenticateApiKey, async (req, res) => {
   try {
     const apiKeyData = req.apiKey // 从认证中间件获取
+
+    // 权限检查
+    if (!hasClaudeMaxPermission(apiKeyData)) {
+      logger.security(
+        `🚫 API Key ${apiKeyData?.id || 'unknown'} 缺少 claudeMax 权限，拒绝访问 ${req.originalUrl}`
+      )
+      return res.status(403).json({
+        error: {
+          type: 'permission_denied',
+          message: '此 API Key 未启用 claudeMax 权限'
+        }
+      })
+    }
+
     logger.info('[CLIProxyAPI] 接收 OpenAI Chat 请求', {
       model: req.body?.model,
       stream: req.body?.stream,
@@ -191,6 +228,20 @@ router.get('/v1/models', async (req, res) => {
 router.all('*', authenticateApiKey, async (req, res) => {
   try {
     const apiKeyData = req.apiKey // 从认证中间件获取
+
+    // 权限检查
+    if (!hasClaudeMaxPermission(apiKeyData)) {
+      logger.security(
+        `🚫 API Key ${apiKeyData?.id || 'unknown'} 缺少 claudeMax 权限，拒绝访问 ${req.originalUrl}`
+      )
+      return res.status(403).json({
+        error: {
+          type: 'permission_denied',
+          message: '此 API Key 未启用 claudeMax 权限'
+        }
+      })
+    }
+
     logger.info(`[CLIProxyAPI] 通配转发: ${req.method} ${req.originalUrl}`, {
       apiKeyId: apiKeyData?.id
     })
