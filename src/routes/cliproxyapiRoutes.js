@@ -15,6 +15,10 @@ const cliproxyapiService = require('../services/cliproxyapiService')
 const cliproxyapiConfig = require('../../config/cliproxyapi')
 const { authenticateApiKey } = require('../middleware/auth')
 const apiKeyService = require('../services/apiKeyService')
+const {
+  isWarmupRequest,
+  sendWarmupResponse
+} = require('../services/antigravityEnhanced/warmupInterceptor')
 
 /**
  * 中间件：检查服务是否启用
@@ -209,6 +213,13 @@ router.post('/v1/messages', authenticateApiKey, async (req, res) => {
   try {
     const apiKeyData = req.apiKey // 从认证中间件获取
 
+    // 🔥 Warmup 请求拦截：直接返回模拟响应，节省上游配额
+    if (isWarmupRequest(req.body)) {
+      const traceId = `claudeMax-${Date.now()}`
+      logger.info(`[CLIProxyAPI] 🔥 Warmup 请求拦截: apiKeyId=${apiKeyData?.id}`)
+      return sendWarmupResponse(res, req.body.stream === true, traceId)
+    }
+
     // 权限检查
     if (!hasClaudeMaxPermission(apiKeyData)) {
       logger.security(
@@ -264,6 +275,13 @@ router.post('/v1/messages', authenticateApiKey, async (req, res) => {
 router.post('/v1/chat/completions', authenticateApiKey, async (req, res) => {
   try {
     const apiKeyData = req.apiKey // 从认证中间件获取
+
+    // 🔥 Warmup 请求拦截：直接返回模拟响应，节省上游配额
+    if (isWarmupRequest(req.body)) {
+      const traceId = `claudeMax-${Date.now()}`
+      logger.info(`[CLIProxyAPI] 🔥 Warmup 请求拦截 (OpenAI): apiKeyId=${apiKeyData?.id}`)
+      return sendWarmupResponse(res, req.body.stream === true, traceId)
+    }
 
     // 权限检查
     if (!hasClaudeMaxPermission(apiKeyData)) {
@@ -339,6 +357,13 @@ router.get('/v1/models', async (req, res) => {
 router.all('*', authenticateApiKey, async (req, res) => {
   try {
     const apiKeyData = req.apiKey // 从认证中间件获取
+
+    // 🔥 Warmup 请求拦截（仅 POST 请求）：直接返回模拟响应，节省上游配额
+    if (req.method === 'POST' && isWarmupRequest(req.body)) {
+      const traceId = `claudeMax-${Date.now()}`
+      logger.info(`[CLIProxyAPI] 🔥 Warmup 请求拦截 (通配): apiKeyId=${apiKeyData?.id}`)
+      return sendWarmupResponse(res, req.body.stream === true, traceId)
+    }
 
     // 权限检查
     if (!hasClaudeMaxPermission(apiKeyData)) {
