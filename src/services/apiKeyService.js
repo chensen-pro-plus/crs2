@@ -787,7 +787,8 @@ class ApiKeyService {
             field === 'restrictedModels' ||
             field === 'allowedClients' ||
             field === 'tags' ||
-            field === 'claudeMaxModelFilters'
+            field === 'claudeMaxModelFilters' ||
+            field === 'permissions'
           ) {
             // 特殊处理数组字段
             updatedData[field] = JSON.stringify(value || [])
