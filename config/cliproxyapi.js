@@ -42,7 +42,10 @@ module.exports = {
     "claude-sonnet-4-5-thinking": "gemini-claude-sonnet-4-5-thinking",
     "claude-opus-4-5-thinking": "gemini-claude-opus-4-5-thinking",
     
-
+    "claude-haiku-4-5-20251001": "gemini-claude-sonnet-4-5",
+    "claude-sonnet-4-20250514": "gemini-claude-sonnet-4-5-thinking",
+    "claude-sonnet-4-5-20250929": "gemini-claude-sonnet-4-5-thinking",
+    "claude-opus-4-5-20251101": "gemini-claude-opus-4-5-thinking",
 
     "gemini-claude-opus-4-5-thinking": "gemini-claude-opus-4-5-thinking",
     "gemini-claude-sonnet-4-5": "gemini-claude-sonnet-4-5",
