@@ -517,6 +517,14 @@ async function proxyRequest(req, res, apiKeyData = null) {
 
           // 📊 记录 Token 消费（异步，不阻塞响应）
           if (usage) {
+            // 🔄 使用用户请求的原始模型名进行记录，而不是响应中返回的模型名
+            // 优先级：请求体中的 originalModel > URL 中的 urlOriginalModel > 响应解析的 usage.model
+            const recordModel = originalModel || urlOriginalModel || usage.model
+            if (recordModel !== usage.model) {
+              logger.info(`[CLIProxyAPI] 🔄 模型名记录替换: "${usage.model}" -> "${recordModel}"`)
+              usage.model = recordModel
+            }
+
             logger.info(`[CLIProxyAPI] ✅ 准备记录 usage:`, {
               apiKeyId: apiKeyData.id,
               usage
