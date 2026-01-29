@@ -35,13 +35,12 @@ module.exports = {
     // 示例：将所有 "gpt-4o" 开头的模型映射为 "claude-3-5-sonnet-20241022"
     // "gpt-4o*": "claude-3-5-sonnet-20241022",
 
-    "gemini-3-pro-high":"gemini-3-pro-preview", 
-    "gemini-3-flash": "gemini-3-flash-preview",
+    // claude模型
     "claude-haiku-4-5": "gemini-claude-sonnet-4-5",
     "claude-sonnet-4-5": "gemini-claude-sonnet-4-5",
     "claude-sonnet-4-5-thinking": "gemini-claude-sonnet-4-5-thinking",
     "claude-opus-4-5-thinking": "gemini-claude-opus-4-5-thinking",
-    
+
     "claude-haiku-4-5-20251001": "gemini-claude-sonnet-4-5",
     "claude-sonnet-4-20250514": "gemini-claude-sonnet-4-5-thinking",
     "claude-sonnet-4-5-20250929": "gemini-claude-sonnet-4-5-thinking",
@@ -49,10 +48,22 @@ module.exports = {
 
     "gemini-claude-opus-4-5-thinking": "gemini-claude-opus-4-5-thinking",
     "gemini-claude-sonnet-4-5": "gemini-claude-sonnet-4-5",
-    "gemini-claude-sonnet-4-5-thinking":"gemini-claude-sonnet-4-5-thinking",
-    "gemini-3-pro-image-preview":"gemini-3-pro-image-preview",
-    "gemini-3-pro-preview":"gemini-3-pro-preview", 
+    "gemini-claude-sonnet-4-5-thinking": "gemini-claude-sonnet-4-5-thinking",
+    // end claude模型
+
+    // gemini模型
+    "gemini-3-pro-high": "gemini-3-pro-preview",
+    "gemini-3-flash": "gemini-3-flash-preview",
+    "gemini-3-pro-image-preview": "gemini-3-pro-image-preview",
+    "gemini-3-pro-preview": "gemini-3-pro-preview",
     "gemini-3-flash-preview": "gemini-3-flash-preview",
+    // end gemini模型
+
+    // 通配符兜底 - 只有上面没匹配到时才生效
+    "claude-haiku*": "gemini-claude-sonnet-4-5",
+    "claude-sonnet*": "gemini-claude-sonnet-4-5-thinking",
+    "claude-opus*": "gemini-claude-opus-4-5-thinking",
+    "gemini-3*": "gemini-3-pro-preview",
   },
 
   /**
