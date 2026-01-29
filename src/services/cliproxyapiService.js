@@ -20,22 +20,65 @@ const apiKeyService = require('./apiKeyService')
  * @returns {object|null} 标准化的 usage 对象
  */
 function parseUsageFromResponse(data) {
+  logger.info('[CLIProxyAPI] 🔍 parseUsageFromResponse - 输入数据类型:', typeof data)
+
   if (!data || typeof data !== 'object') {
+    logger.warn('[CLIProxyAPI] ⚠️ parseUsageFromResponse - 数据无效或非对象')
     return null
   }
+
+  logger.info('[CLIProxyAPI] 🔍 parseUsageFromResponse - 数据结构:', {
+    hasUsage: !!data.usage,
+    usageKeys: data.usage ? Object.keys(data.usage) : null,
+    model: data.model,
+    topLevelKeys: Object.keys(data)
+  })
 
   // OpenAI 格式
   if (data.usage) {
     const { usage } = data
-    return {
+    const result = {
       inputTokens: usage.prompt_tokens || usage.input_tokens || 0,
       outputTokens: usage.completion_tokens || usage.output_tokens || 0,
       cacheCreateTokens: usage.cache_creation_input_tokens || 0,
       cacheReadTokens: usage.cache_read_input_tokens || 0,
       model: data.model || 'unknown'
     }
+
+    logger.info('[CLIProxyAPI] ✅ parseUsageFromResponse - 成功提取 usage:', result)
+    return result
   }
 
+  // Gemini 格式 - usageMetadata 或 cpaUsageMetadata
+  const geminiUsage = data.usageMetadata || data.cpaUsageMetadata
+  if (geminiUsage) {
+    // Gemini 的 outputTokens 需要特殊处理：candidatesTokenCount 可能不包含 thoughtsTokenCount
+    const promptTokens = geminiUsage.promptTokenCount || 0
+    const candidateTokens = geminiUsage.candidatesTokenCount || 0
+    const thoughtTokens = geminiUsage.thoughtsTokenCount || 0
+    const totalTokens = geminiUsage.totalTokenCount || 0
+
+    // 计算实际输出 tokens：如果 totalTokens 存在，使用 total - prompt；否则使用 candidates + thoughts
+    let outputTokens = candidateTokens
+    if (totalTokens > 0 && totalTokens > promptTokens) {
+      outputTokens = totalTokens - promptTokens
+    } else if (thoughtTokens > 0) {
+      outputTokens = candidateTokens + thoughtTokens
+    }
+
+    const result = {
+      inputTokens: promptTokens,
+      outputTokens,
+      cacheCreateTokens: 0,
+      cacheReadTokens: geminiUsage.cachedContentTokenCount || 0,
+      model: data.model || data.modelVersion || 'unknown'
+    }
+
+    logger.info('[CLIProxyAPI] ✅ parseUsageFromResponse - Gemini格式 usage:', result)
+    return result
+  }
+
+  logger.warn('[CLIProxyAPI] ⚠️ parseUsageFromResponse - 未找到 usage 字段')
   return null
 }
 
@@ -46,15 +89,23 @@ function parseUsageFromResponse(data) {
  * @returns {object|null} 标准化的 usage 对象
  */
 function parseUsageFromStream(sseData) {
+  logger.info('[CLIProxyAPI] 🔍 parseUsageFromStream - 开始解析流式数据')
+
   if (!sseData || typeof sseData !== 'string') {
+    logger.warn('[CLIProxyAPI] ⚠️ parseUsageFromStream - 数据无效或非字符串')
     return null
   }
 
+  logger.info('[CLIProxyAPI] 🔍 parseUsageFromStream - 流数据长度:', sseData.length)
+
   let lastUsage = null
   let lastModel = 'unknown'
+  let eventCount = 0
 
   // 按行解析 SSE 事件
   const lines = sseData.split('\n')
+  logger.info('[CLIProxyAPI] 🔍 parseUsageFromStream - 总行数:', lines.length)
+
   for (const line of lines) {
     if (!line.startsWith('data: ') || line.includes('[DONE]')) {
       continue
@@ -67,10 +118,12 @@ function parseUsageFromStream(sseData) {
       }
 
       const data = JSON.parse(jsonStr)
+      eventCount++
 
       // 记录模型名称
       if (data.model) {
         lastModel = data.model
+        logger.info('[CLIProxyAPI] 🔍 parseUsageFromStream - 发现模型:', lastModel)
       }
 
       // OpenAI 格式的流式 usage
@@ -83,6 +136,39 @@ function parseUsageFromStream(sseData) {
           cacheReadTokens: usage.cache_read_input_tokens || 0,
           model: lastModel
         }
+        logger.info('[CLIProxyAPI] ✅ parseUsageFromStream - OpenAI格式 usage:', lastUsage)
+      }
+
+      // Gemini 格式的流式 usage - usageMetadata 或 cpaUsageMetadata
+      const geminiUsage = data.usageMetadata || data.cpaUsageMetadata
+      if (geminiUsage) {
+        // Gemini 的 outputTokens 需要特殊处理
+        const promptTokens = geminiUsage.promptTokenCount || 0
+        const candidateTokens = geminiUsage.candidatesTokenCount || 0
+        const thoughtTokens = geminiUsage.thoughtsTokenCount || 0
+        const totalTokens = geminiUsage.totalTokenCount || 0
+
+        // 计算实际输出 tokens
+        let outputTokens = candidateTokens
+        if (totalTokens > 0 && totalTokens > promptTokens) {
+          outputTokens = totalTokens - promptTokens
+        } else if (thoughtTokens > 0) {
+          outputTokens = candidateTokens + thoughtTokens
+        }
+
+        // 记录模型版本（Gemini 使用 modelVersion）
+        if (data.modelVersion) {
+          lastModel = data.modelVersion
+        }
+
+        lastUsage = {
+          inputTokens: promptTokens,
+          outputTokens,
+          cacheCreateTokens: 0,
+          cacheReadTokens: geminiUsage.cachedContentTokenCount || 0,
+          model: lastModel
+        }
+        logger.info('[CLIProxyAPI] ✅ parseUsageFromStream - Gemini格式 usage:', lastUsage)
       }
 
       // Claude 流式格式 - message_delta 事件中的 usage
@@ -95,6 +181,10 @@ function parseUsageFromStream(sseData) {
           cacheReadTokens: usage.cache_read_input_tokens || 0,
           model: lastModel
         }
+        logger.info(
+          '[CLIProxyAPI] ✅ parseUsageFromStream - Claude message_delta usage:',
+          lastUsage
+        )
       }
 
       // Claude 流式格式 - message_start 事件中可能包含 input_tokens
@@ -116,11 +206,22 @@ function parseUsageFromStream(sseData) {
           lastModel = data.message.model
           lastUsage.model = lastModel
         }
+        logger.info(
+          '[CLIProxyAPI] ✅ parseUsageFromStream - Claude message_start usage:',
+          lastUsage
+        )
       }
     } catch (e) {
       // 忽略 JSON 解析错误
+      logger.debug('[CLIProxyAPI] 🔍 parseUsageFromStream - JSON解析失败 (跳过):', e.message)
     }
   }
+
+  logger.info('[CLIProxyAPI] 🔍 parseUsageFromStream - 解析完成', {
+    eventCount,
+    hasUsage: !!lastUsage,
+    finalUsage: lastUsage
+  })
 
   return lastUsage
 }
@@ -187,6 +288,11 @@ function getTargetUrl(path) {
  * @returns {boolean} 是否为流式请求
  */
 function isStreamRequest(req) {
+  // Gemini API 流式请求特征：URL 包含 streamGenerateContent 或 alt=sse
+  const url = req.originalUrl || req.url || ''
+  if (url.includes('streamGenerateContent') || url.includes('alt=sse')) {
+    return true
+  }
   // 检查请求体中的 stream 字段
   if (req.body && req.body.stream === true) {
     return true
@@ -370,25 +476,68 @@ async function proxyRequest(req, res, apiKeyData = null) {
         proxyRes.on('end', () => {
           const responseData = Buffer.concat(chunks).toString('utf-8')
 
+          // 🔍 DEBUG: 记录原始请求模型（使用外层已声明的 originalModel 变量）
+          logger.info(`[CLIProxyAPI] 🔍 DEBUG - Usage解析开始`, {
+            apiKeyId: apiKeyData?.id,
+            originalModel,
+            mappedModel,
+            isStream,
+            statusCode,
+            responseLength: responseData.length,
+            responsePreview: responseData.substring(0, 500)
+          })
+
           // 解析并记录 usage
           let usage = null
           if (isStream) {
             // 流式响应：从 SSE 事件中解析
+            logger.info('[CLIProxyAPI] 🔍 DEBUG - 流式响应，调用 parseUsageFromStream')
             usage = parseUsageFromStream(responseData)
+            logger.info('[CLIProxyAPI] 🔍 DEBUG - parseUsageFromStream 结果:', usage)
           } else {
             // 非流式响应：从 JSON 中解析
             try {
               const jsonData = JSON.parse(responseData)
+              logger.info('[CLIProxyAPI] 🔍 DEBUG - JSON 解析成功，响应数据结构:', {
+                hasUsage: !!jsonData.usage,
+                usageKeys: jsonData.usage ? Object.keys(jsonData.usage) : null,
+                usageData: jsonData.usage,
+                model: jsonData.model,
+                choices: jsonData.choices?.length || 0
+              })
               usage = parseUsageFromResponse(jsonData)
+              logger.info('[CLIProxyAPI] 🔍 DEBUG - parseUsageFromResponse 结果:', usage)
             } catch (e) {
-              logger.debug('[CLIProxyAPI] 无法解析响应 JSON，跳过 usage 记录')
+              logger.warn('[CLIProxyAPI] ⚠️ 无法解析响应 JSON，跳过 usage 记录', {
+                error: e.message,
+                responsePreview: responseData.substring(0, 200)
+              })
             }
           }
 
           // 📊 记录 Token 消费（异步，不阻塞响应）
           if (usage) {
+            // 🔄 使用用户请求的原始模型名进行记录，而不是响应中返回的模型名
+            // 优先级：请求体中的 originalModel > URL 中的 urlOriginalModel > 响应解析的 usage.model
+            const recordModel = originalModel || urlOriginalModel || usage.model
+            if (recordModel !== usage.model) {
+              logger.info(`[CLIProxyAPI] 🔄 模型名记录替换: "${usage.model}" -> "${recordModel}"`)
+              usage.model = recordModel
+            }
+
+            logger.info(`[CLIProxyAPI] ✅ 准备记录 usage:`, {
+              apiKeyId: apiKeyData.id,
+              usage
+            })
             recordTokenUsage(apiKeyData, usage).catch((error) => {
-              logger.error('[CLIProxyAPI] 记录 Token 消费异常:', error)
+              logger.error('[CLIProxyAPI] ❌ 记录 Token 消费异常:', error)
+            })
+          } else {
+            logger.warn(`[CLIProxyAPI] ⚠️ 未能提取 usage 数据`, {
+              apiKeyId: apiKeyData.id,
+              originalModel,
+              isStream,
+              statusCode
             })
           }
 
