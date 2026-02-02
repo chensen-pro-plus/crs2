@@ -1000,6 +1000,18 @@
                             >
                               <i class="fas fa-chart-pie mr-2 text-indigo-500" />
                               模型使用分布
+                              <el-tooltip
+                                v-if="
+                                  getApiKeyDateFilter(key.id).preset === '30days' ||
+                                  getApiKeyDateFilter(key.id).type === 'custom'
+                                "
+                                content="模型详细数据仅保留30天，历史数据会过期。表格中的总费用是累计值，可能与模型分布总和不同。"
+                                placement="top"
+                              >
+                                <i
+                                  class="fas fa-info-circle ml-1 cursor-help text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                                />
+                              </el-tooltip>
                             </h5>
                             <div class="flex items-center gap-2">
                               <span
@@ -3214,18 +3226,33 @@ const calculateApiKeyModelPercentage = (value, stats) => {
 
 // 计算单个模型费用
 const calculateModelCost = (stat) => {
-  // 优先使用后端返回的费用数据
+  // 优先使用后端返回的格式化费用数据
   if (stat.formatted && stat.formatted.total) {
     return stat.formatted.total
   }
 
+  // 如果有 costs.total，使用它来格式化
+  if (stat.costs && typeof stat.costs.total === 'number') {
+    const cost = stat.costs.total
+    if (cost === 0) return '$0.00'
+    if (cost < 0.000001) return '$0.000000'
+    if (cost < 0.01) return `$${cost.toFixed(6)}`
+    if (cost < 1) return `$${cost.toFixed(4)}`
+    return `$${cost.toFixed(2)}`
+  }
+
   // 如果没有 formatted 数据，尝试使用 cost 字段
-  if (stat.cost !== undefined) {
-    return `$${stat.cost.toFixed(6)}`
+  if (stat.cost !== undefined && stat.cost !== null) {
+    const cost = parseFloat(stat.cost)
+    if (!isNaN(cost)) {
+      if (cost === 0) return '$0.00'
+      if (cost < 0.01) return `$${cost.toFixed(6)}`
+      return `$${cost.toFixed(4)}`
+    }
   }
 
   // 默认返回
-  return '$0.000000'
+  return '$0.00'
 }
 
 // 获取日期范围内的请求数
