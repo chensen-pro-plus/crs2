@@ -137,10 +137,24 @@ else
     git checkout --orphan web-dist
 fi
 
-# 清空并复制前端产物
+# 清空并复制前端产物（保持目录结构：根目录 + web/admin-spa/dist/）
 git rm -rf . 2>/dev/null || true
 rm -rf * 2>/dev/null || true
+
+# 复制到根目录（assets/, index.html 等）
 cp -r "${OLDPWD}/web/admin-spa/dist"/* .
+
+# 同时保留 web/admin-spa/dist/ 目录结构（兼容 manage.sh）
+mkdir -p web/admin-spa/dist
+cp -r "${OLDPWD}/web/admin-spa/dist"/* web/admin-spa/dist/
+
+# 添加 .gitignore
+cat > .gitignore << EOF
+node_modules/
+*.log
+.DS_Store
+.env
+EOF
 
 # 添加 README
 cat > README.md << EOF
