@@ -14,8 +14,14 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# Docker 镜像名称
-DOCKER_IMAGE="weishaw/claude-relay-service"
+# Git 远程仓库名（自动检测，优先 origin，其次 gitcode）
+if git remote | grep -q "^origin$"; then
+    GIT_REMOTE="origin"
+elif git remote | grep -q "^gitcode$"; then
+    GIT_REMOTE="gitcode"
+else
+    GIT_REMOTE=$(git remote | head -1)
+fi
 
 # 解析参数
 SKIP_CONFIRM=false
@@ -109,21 +115,32 @@ echo -e "${BLUE}[3/6] 推送前端产物到 web-dist 分支...${NC}"
 # 保存当前分支
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
-# 创建临时目录保存前端产物
-TEMP_DIR=$(mktemp -d)
-cp -r web/admin-spa/dist/* "$TEMP_DIR/"
+# 使用 worktree 方式处理，避免影响当前工作区
+TEMP_WORKTREE=$(mktemp -d)
+REPO_URL=$(git remote get-url ${GIT_REMOTE})
 
-# 切换到 web-dist 分支
+# 克隆一个干净的仓库到临时目录
+git clone --depth 1 --single-branch "$REPO_URL" "$TEMP_WORKTREE" 2>/dev/null || {
+    # 如果 clone 失败，使用本地目录
+    cd "$TEMP_WORKTREE"
+    git init
+    git remote add origin "$REPO_URL"
+}
+
+cd "$TEMP_WORKTREE"
+
+# 检查并切换到 web-dist 分支
 if git ls-remote --heads origin web-dist | grep -q web-dist; then
-    git fetch origin web-dist:web-dist 2>/dev/null || true
-    git checkout web-dist
+    git fetch origin web-dist
+    git checkout -b web-dist origin/web-dist || git checkout --orphan web-dist
 else
     git checkout --orphan web-dist
 fi
 
-# 清空并复制新文件
+# 清空并复制前端产物
 git rm -rf . 2>/dev/null || true
-cp -r "$TEMP_DIR"/* .
+rm -rf * 2>/dev/null || true
+cp -r "${OLDPWD}/web/admin-spa/dist"/* .
 
 # 添加 README
 cat > README.md << EOF
@@ -144,45 +161,26 @@ git add --all
 git commit -m "chore: update frontend build for ${NEW_TAG} [skip ci]" || echo "无变更"
 git push origin web-dist --force
 
-# 切回原分支
-git checkout "$CURRENT_BRANCH"
+# 返回原目录
+cd "${OLDPWD}"
 
 # 清理临时目录
-rm -rf "$TEMP_DIR"
+rm -rf "$TEMP_WORKTREE"
 
 echo -e "${GREEN}✅ web-dist 分支已更新${NC}"
 
-# Step 4: 提交主分支
-echo -e "${BLUE}[4/6] 提交主分支更改...${NC}"
-git add VERSION
-git commit -m "chore: bump version to ${NEW_VERSION} [skip ci]" || echo "VERSION 无变更"
-git push origin "$CURRENT_BRANCH"
-echo -e "${GREEN}✅ 主分支已推送${NC}"
-
-# Step 5: 创建并推送 Tag
-echo -e "${BLUE}[5/6] 创建 Git Tag...${NC}"
-git tag -a "${NEW_TAG}" -m "Release ${NEW_TAG}"
-git push origin "${NEW_TAG}"
+# Step 4: 创建并推送 Tag
+echo -e "${BLUE}[4/5] 创建 Git Tag...${NC}"
+git tag -a "${NEW_TAG}" -m "Release ${NEW_TAG}" 2>/dev/null || echo "Tag 已存在"
+git push ${GIT_REMOTE} "${NEW_TAG}" 2>/dev/null || echo "Tag 已推送"
 echo -e "${GREEN}✅ Tag ${NEW_TAG} 已创建${NC}"
 
-# Step 6: 构建并推送 Docker 镜像
-echo -e "${BLUE}[6/6] 构建并推送 Docker 镜像...${NC}"
-
-# 检查 Docker 是否登录
-if ! docker info 2>/dev/null | grep -q "Username"; then
-    echo -e "${YELLOW}请先登录 Docker Hub:${NC}"
-    docker login
-fi
-
-docker build -t ${DOCKER_IMAGE}:${NEW_TAG} .
-docker tag ${DOCKER_IMAGE}:${NEW_TAG} ${DOCKER_IMAGE}:${NEW_VERSION}
-docker tag ${DOCKER_IMAGE}:${NEW_TAG} ${DOCKER_IMAGE}:latest
-
-docker push ${DOCKER_IMAGE}:${NEW_TAG}
-docker push ${DOCKER_IMAGE}:${NEW_VERSION}
-docker push ${DOCKER_IMAGE}:latest
-
-echo -e "${GREEN}✅ Docker 镜像已推送${NC}"
+# Step 5: 提交主分支
+echo -e "${BLUE}[5/5] 提交主分支更改...${NC}"
+git add VERSION release.sh 2>/dev/null || true
+git commit -m "chore: bump version to ${NEW_VERSION} [skip ci]" || echo "无变更"
+git push ${GIT_REMOTE} "$CURRENT_BRANCH"
+echo -e "${GREEN}✅ 主分支已推送${NC}"
 
 echo ""
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -190,8 +188,6 @@ echo -e "${GREEN}🎉 发布完成！${NC}"
 echo ""
 echo -e "版本:  ${GREEN}${NEW_VERSION}${NC}"
 echo -e "Tag:   ${GREEN}${NEW_TAG}${NC}"
-echo -e "镜像:  ${GREEN}${DOCKER_IMAGE}:${NEW_TAG}${NC}"
 echo ""
 echo -e "用户更新方式:"
-echo -e "  脚本部署: ${BLUE}crs update${NC}"
-echo -e "  Docker:   ${BLUE}docker pull ${DOCKER_IMAGE}:latest${NC}"
+echo -e "  ${BLUE}crs update${NC}"
