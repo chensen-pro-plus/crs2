@@ -28,7 +28,7 @@
         <div class="mb-2 flex items-start justify-between md:mb-3">
           <div class="min-w-0 flex-1">
             <h4 class="break-all text-base font-bold text-gray-900 dark:text-gray-100 md:text-lg">
-              {{ model.model }}
+              {{ formatModelDisplayName(model.model) }}
             </h4>
             <p class="text-xs text-gray-600 dark:text-gray-400 md:text-sm">
               {{ model.requests }} 次请求
@@ -87,6 +87,13 @@ import { useApiStatsStore } from '@/stores/apistats'
 
 const apiStatsStore = useApiStatsStore()
 const { statsPeriod, modelStats, modelStatsLoading } = storeToRefs(apiStatsStore)
+
+// 格式化模型名称（展示层映射）
+const formatModelDisplayName = (modelName) => {
+  if (!modelName) return ''
+  if (modelName === 'kimi-for-coding') return 'claude'
+  return modelName
+}
 
 // 格式化数字
 const formatNumber = (num) => {

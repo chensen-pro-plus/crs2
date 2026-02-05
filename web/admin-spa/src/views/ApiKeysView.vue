@@ -1105,7 +1105,7 @@
                                 <div class="flex-1">
                                   <span
                                     class="mb-1 block text-sm font-semibold text-gray-800 dark:text-gray-200"
-                                    >{{ stat.model }}</span
+                                    >{{ formatModelDisplayName(stat.model) }}</span
                                   >
                                   <span
                                     class="rounded-full bg-blue-50 px-2 py-1 text-xs text-gray-500 dark:bg-blue-900/30 dark:text-gray-400"
@@ -2682,7 +2682,9 @@ const loadPageStats = async () => {
 
   // 标记为加载中
   const keyIds = keysNeedStats.map((k) => k.id)
-  keyIds.forEach((id) => statsLoading.value.add(id))
+  keyIds.forEach((id) => {
+    statsLoading.value.add(id)
+  })
 
   try {
     const requestBody = {
@@ -2712,7 +2714,9 @@ const loadPageStats = async () => {
     console.error('加载统计数据失败:', error)
     // 不显示 toast，避免打扰用户
   } finally {
-    keyIds.forEach((id) => statsLoading.value.delete(id))
+    keyIds.forEach((id) => {
+      statsLoading.value.delete(id)
+    })
   }
 }
 
@@ -2745,7 +2749,9 @@ const loadPageLastUsage = async () => {
 
   // 标记为加载中
   const keyIds = keysNeedLastUsage.map((k) => k.id)
-  keyIds.forEach((id) => lastUsageLoading.value.add(id))
+  keyIds.forEach((id) => {
+    lastUsageLoading.value.add(id)
+  })
 
   try {
     const response = await apiClient.post('/admin/api-keys/batch-last-usage', { keyIds })
@@ -2760,7 +2766,9 @@ const loadPageLastUsage = async () => {
     console.error('加载最后使用账号数据失败:', error)
     // 不显示 toast，避免打扰用户
   } finally {
-    keyIds.forEach((id) => lastUsageLoading.value.delete(id))
+    keyIds.forEach((id) => {
+      lastUsageLoading.value.delete(id)
+    })
   }
 }
 
@@ -2903,6 +2911,13 @@ const formatTokenCount = (count) => {
     return (count / 1000).toFixed(1) + 'K'
   }
   return count.toString()
+}
+
+// 格式化模型名称（展示层映射）
+const formatModelDisplayName = (modelName) => {
+  if (!modelName) return ''
+  if (modelName === 'kimi-for-coding') return 'claude'
+  return modelName
 }
 
 // 获取绑定账户名称
